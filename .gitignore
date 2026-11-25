@@ -1,0 +1,107 @@
+# Build directories
+build/
+build_*/
+cmake-build-*/
+*.cmake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Compiled objects and libraries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exp
+*.pdb
+*.ilk
+
+# Executables
+telemetry_logger
+telemetry_logger.exe
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.vs/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+*.sqlitedb
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# Coverage and profiling
+*.gcda
+*.gcno
+*.gcov
+coverage/
+gmon.out
+callgrind.out.*
+perf.data*
+
+# Documentation generated
+docs/_build/
+*.pdf
+
+# Local configuration
+local_config.*
+*.local
+.env
+.env.local
+
+# ARM toolchain (if vendored)
+arm-none-eabi/
+gcc-arm-none-eabi*/
+
+# Package managers
+node_modules/
+package-lock.json
+yarn.lock
+Cargo.lock
+vendor/
+
+# Test artifacts (not used per constraints)
+test_*
+*_test.*
+tests/
+test/
