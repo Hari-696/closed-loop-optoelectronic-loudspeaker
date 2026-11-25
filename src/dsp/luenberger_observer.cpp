@@ -215,7 +215,7 @@ bool luenberger_observer_init(float observer_pole_hz) noexcept {
     
     // Convert to Q31
     // Scaling: states are in physical units (m, m/s), inputs in V
-    // Q31 represents ±X_LIM for displacement, ±10 m/s for velocity, ±5V for voltage
+    // Q31 represents ±X_LIM for displacement, ±10 m/s for velocity, ±150V for voltage
     
     auto to_q31_scaled = [](float val, float full_scale) -> fixed::q31_t {
         return fixed::q31_from_float(val / full_scale);
@@ -226,8 +226,8 @@ bool luenberger_observer_init(float observer_pole_hz) noexcept {
     g_observer_matrices.a10 = to_q31_scaled(A_d.m10 / 10.0f, 1.0f);  // x contributes to v
     g_observer_matrices.a11 = to_q31_scaled(A_d.m11, 1.0f);
     
-    g_observer_matrices.b0 = to_q31_scaled(B_d.x / 5.0f, 1.0f);  // u in ±5V → x
-    g_observer_matrices.b1 = to_q31_scaled(B_d.y / 5.0f, 1.0f);  // u in ±5V → v
+    g_observer_matrices.b0 = to_q31_scaled(B_d.x / AMP_FULL_SCALE_V, 1.0f);  // u in ±150V → x
+    g_observer_matrices.b1 = to_q31_scaled(B_d.y / AMP_FULL_SCALE_V, 1.0f);  // u in ±150V → v
     
     g_observer_matrices.l0 = to_q31_scaled(L.x, 1.0f);
     g_observer_matrices.l1 = to_q31_scaled(L.y / 10.0f, 1.0f);  // y in m → v

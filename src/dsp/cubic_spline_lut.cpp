@@ -199,20 +199,22 @@ bool cubic_spline_lut_init_from_model(float d0, float r_f, float responsivity, f
     static float voltages[NUM_CAL_POINTS];
     static float displacements[NUM_CAL_POINTS];
     
-    // Generate points spanning -X_LIM to +X_LIM
+    // Generate points spanning +X_LIM to -X_LIM (REVERSE order)
+    // So that V_out goes from less negative (x=+X_LIM, small gap) 
+    // to more negative (x=-X_LIM, large gap) → voltages INCREASE
     for (size_t i = 0; i < NUM_CAL_POINTS; ++i) {
-        float x = -X_LIM + (2.0f * X_LIM * static_cast<float>(i)) / static_cast<float>(NUM_CAL_POINTS - 1);
+        float x = X_LIM - (2.0f * X_LIM * static_cast<float>(i)) / static_cast<float>(NUM_CAL_POINTS - 1);
         float d = d0 - x;
         float p_rx = p_tx_optical * responsivity * (1.0f / (4.0f * PI * d * d));  // Simplified
         float i_ph = responsivity * p_rx;
-        float v_out = -i_ph * r_f;
+        float v_out = -i_ph * r_f;  // V_out is negative, becomes MORE negative as x increases
         
         voltages[i] = v_out;
         displacements[i] = x;
     }
     
-    // Sort by voltage (should already be monotonic for inverse-square)
-    // But ensure it's strictly increasing
+    // Voltages now INCREASE (become more negative) as i increases
+    // Verify strictly increasing (more negative = smaller value = increasing in our convention)
     for (size_t i = 1; i < NUM_CAL_POINTS; ++i) {
         if (voltages[i] <= voltages[i-1]) {
             // Non-monotonic - model parameters may be wrong

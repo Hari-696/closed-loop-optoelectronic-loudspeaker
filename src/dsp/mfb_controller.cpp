@@ -234,16 +234,16 @@ bool mfb_controller_init(float cl_pole_hz, float damping) noexcept {
     float K_r = compute_reference_gain(A_d, B_d, C_c, K);
     
     // Convert to Q31
-    // K gains: input is state (±X_LIM, ±10 m/s), output is voltage (±5V)
-    // K_r: input is reference (±X_MAX), output is voltage (±5V)
+    // K gains: input is state (±X_LIM, ±10 m/s), output is voltage (±150V = AMP_FULL_SCALE_V)
+    // K_r: input is reference (±X_MAX), output is voltage (±150V = AMP_FULL_SCALE_V)
     
     auto to_q31 = [](float val, float in_scale, float out_scale) -> fixed::q31_t {
         return fixed::q31_from_float(val * in_scale / out_scale);
     };
     
-    g_mfb_gains.k1 = to_q31(K.x, X_LIM, 5.0f);      // Position gain
-    g_mfb_gains.k2 = to_q31(K.y, 10.0f, 5.0f);       // Velocity gain
-    g_mfb_gains.k_r = to_q31(K_r, X_MAX, 5.0f);      // Reference gain
+    g_mfb_gains.k1 = to_q31(K.x, X_LIM, AMP_FULL_SCALE_V);      // Position gain
+    g_mfb_gains.k2 = to_q31(K.y, 10.0f, AMP_FULL_SCALE_V);       // Velocity gain
+    g_mfb_gains.k_r = to_q31(K_r, X_MAX, AMP_FULL_SCALE_V);      // Reference gain
     
     return true;
 }
