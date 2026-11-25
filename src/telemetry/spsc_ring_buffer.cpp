@@ -3,7 +3,7 @@
  * @brief SPSC ring buffer global instance definition.
  */
 
-#include "spsc_ring_buffer.hpp"
+#include "telemetry/spsc_ring_buffer.hpp"
 
 namespace telemetry {
 

@@ -3,13 +3,25 @@
  * @brief MFB controller initialization - discrete pole placement and gain computation.
  */
 
-#include "mfb_controller.hpp"
-#include "luenberger_observer.hpp"
+#include "dsp/mfb_controller.hpp"
+#include "dsp/luenberger_observer.hpp"
 #include <cmath>
 
 namespace dsp {
 
 MFBGainsQ31 g_mfb_gains{};
+
+// ============================================================================
+// Helper Types (must be defined before use)
+// ============================================================================
+
+struct FloatMat22 {
+    float m00, m01, m10, m11;
+};
+
+struct FloatVec2 {
+    float x, y;
+};
 
 // ============================================================================
 // Controller Gain Calculation (Ackermann's Formula)
@@ -125,15 +137,6 @@ float compute_reference_gain(const FloatMat22& A_d, const FloatVec2& B_d,
     if (std::abs(dc_gain) < 1e-12f) return 1.0f;
     return 1.0f / dc_gain;
 }
-
-// Helper types
-struct FloatMat22 {
-    float m00, m01, m10, m11;
-};
-
-struct FloatVec2 {
-    float x, y;
-};
 
 // ============================================================================
 // Initialization

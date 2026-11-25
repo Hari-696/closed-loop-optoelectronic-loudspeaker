@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <atomic>
 #include <array>
-#include "config.hpp"
+#include "dsp/config.hpp"
 
 namespace telemetry {
 
@@ -47,8 +47,8 @@ static_assert(sizeof(TelemetrySample) == 64, "TelemetrySample must be 64 bytes")
 
 class SpscRingBuffer {
 public:
-    static constexpr size_t CAPACITY = TELEMETRY_RING_DEPTH;  // 4096
-    static constexpr size_t BATCH_SIZE = TELEMETRY_BATCH_SIZE; // 128
+    static constexpr size_t CAPACITY = dsp::TELEMETRY_RING_DEPTH;  // 4096
+    static constexpr size_t BATCH_SIZE = dsp::TELEMETRY_BATCH_SIZE; // 128
     
     SpscRingBuffer() noexcept = default;
     
@@ -193,8 +193,9 @@ extern SpscRingBuffer g_ring_buffer;
 // C-style API (for dsp_pipeline.cpp)
 // ============================================================================
 
-DSP_INLINE void spsc_ring_buffer_init() noexcept {
+DSP_INLINE bool spsc_ring_buffer_init() noexcept {
     g_ring_buffer.init();
+    return true;
 }
 
 DSP_INLINE void spsc_ring_buffer_reset() noexcept {

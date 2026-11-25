@@ -3,7 +3,7 @@
  * @brief Luenberger observer initialization - ZOH discretization and pole placement.
  */
 
-#include "luenberger_observer.hpp"
+#include "dsp/luenberger_observer.hpp"
 #include <cmath>
 
 namespace dsp {
@@ -145,7 +145,7 @@ FloatVec2 matrix_exp_integral_B(const FloatMat22& A, const FloatVec2& B, float d
 // Error dynamics: e[k+1] = (A_d - L C_d) e[k]
 // Characteristic polynomial: z² - tr(A_d - L C_d) z + det(A_d - L C_d)
 // Desired: (z - p1)(z - p2) = z² - (p1+p2)z + p1*p2
-void compute_observer_gain(const FloatMat22& A_d, const FloatVec2& C_d, 
+void compute_observer_gain(const FloatMat22& A_d, const FloatVec2& /*C_d*/, 
                           float pole1, float pole2,
                           FloatVec2& L_out) noexcept {
     // For C_d = [1, 0], the observer gain L = [l0; l1] affects first row of A_d

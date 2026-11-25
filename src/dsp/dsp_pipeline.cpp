@@ -6,14 +6,14 @@
  * Worst-case < 60 µs at 96 kHz on Cortex-M7 @ 480 MHz.
  */
 
-#include "dsp_pipeline.hpp"
-#include "cubic_spline_lut.hpp"
-#include "luenberger_observer.hpp"
-#include "mfb_controller.hpp"
-#include "volterra_filter.hpp"
-#include "decoupling_limiter.hpp"
-#include "lsp_estimator.hpp"
-#include "spsc_ring_buffer.hpp"  // For telemetry push
+#include "dsp/dsp_pipeline.hpp"
+#include "dsp/cubic_spline_lut.hpp"
+#include "dsp/luenberger_observer.hpp"
+#include "dsp/mfb_controller.hpp"
+#include "dsp/volterra_filter.hpp"
+#include "dsp/decoupling_limiter.hpp"
+#include "dsp/lsp_estimator.hpp"
+#include "telemetry/spsc_ring_buffer.hpp"  // For telemetry push
 #include <cstdint>
 
 namespace dsp {
@@ -44,7 +44,7 @@ bool dsp_pipeline_init() noexcept {
     ok &= volterra_filter_init(1.0f / X_MAX, 5.0f);
     ok &= decoupling_limiter_init();
     ok &= lsp_estimator_init();
-    ok &= spsc_ring_buffer_init();
+    ok &= telemetry::spsc_ring_buffer_init();
     
     // Reset pipeline state
     dsp_pipeline_reset();
@@ -63,7 +63,7 @@ void dsp_pipeline_reset() noexcept {
     volterra_filter_reset();
     decoupling_limiter_reset();
     lsp_estimator_reset();
-    spsc_ring_buffer_reset();
+    telemetry::spsc_ring_buffer_reset();
 }
 
 // ============================================================================
@@ -100,7 +100,7 @@ DSP_INLINE void push_telemetry_sample() noexcept {
     using namespace fixed;
     auto& F = g_dsp_frame;
     
-    TelemetrySample sample{};
+    telemetry::TelemetrySample sample{};
     sample.x = q31_to_float(F.x_meas) * 1000.0f;           // m → mm
     sample.x_dot = q31_to_float(F.v_hat);                   // m/s
     sample.i = q31_to_float(F.i_meas);                      // A
@@ -124,7 +124,7 @@ DSP_INLINE void push_telemetry_sample() noexcept {
     sample.imd = g_lsp_curves.imd_pct;
     sample.ts = F.sample_count;  // Use sample counter as timestamp
     
-    spsc_ring_buffer_push(sample);
+    telemetry::spsc_ring_buffer_push(sample);
 }
 
 // ============================================================================
@@ -190,7 +190,6 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     // ================================================================
     if (g_dsp_frame.sample_count % LSP_DECIMATION == 0) {
         float x_meas_f = q31_to_float(x_meas_q31);
-        float x_hat_f = q31_to_float(x_hat_q31);
         float v_hat_f = q31_to_float(v_hat_q31);
         float v_meas_f = q31_to_float(v_meas_q31);
         float i_meas_f = q31_to_float(i_meas_q31);

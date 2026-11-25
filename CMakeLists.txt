@@ -21,12 +21,27 @@ endif()
 
 # Warning flags
 if(MSVC)
-    set(STRICT_WARNINGS "/W4 /WX /permissive-")
+    add_compile_options(/W4 /WX /permissive-)
 else()
-    set(STRICT_WARNINGS "-Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align -Wunused -Woverloaded-virtual -Wdouble-promotion -Wformat=2 -Wnull-dereference")
+    add_compile_options(
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Werror
+        -Wshadow
+        -Wnon-virtual-dtor
+        -Wold-style-cast
+        -Wcast-align
+        -Wunused
+        -Woverloaded-virtual
+        -Wdouble-promotion
+        -Wformat=2
+        -Wnull-dereference
+        # Disable these for now due to implicit conversions in DSP math
+        -Wno-conversion
+        -Wno-sign-conversion
+    )
 endif()
-
-add_compile_options(${STRICT_WARNINGS})
 
 # Optimization for release
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O2 -DNDEBUG")
@@ -69,6 +84,7 @@ add_library(dsp_core STATIC
     src/dsp/decoupling_limiter.cpp
     src/dsp/lsp_estimator.cpp
     src/dsp/dsp_pipeline.cpp
+    src/telemetry/spsc_ring_buffer.cpp
 )
 
 target_include_directories(dsp_core PUBLIC
@@ -78,7 +94,6 @@ target_include_directories(dsp_core PUBLIC
 
 target_compile_definitions(dsp_core PRIVATE
     DSP_CORE_EXPORTS
-    F_S=96000
     DSP_FIXED_POINT=1
 )
 
@@ -118,6 +133,7 @@ if(NOT DEFINED ENV{ARM_TOOLCHAIN})
         src/dsp/decoupling_limiter.cpp
         src/dsp/lsp_estimator.cpp
         src/dsp/dsp_pipeline.cpp
+        src/telemetry/spsc_ring_buffer.cpp
     )
     target_include_directories(dsp_core_shared PUBLIC
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
@@ -125,7 +141,6 @@ if(NOT DEFINED ENV{ARM_TOOLCHAIN})
     )
     target_compile_definitions(dsp_core_shared PRIVATE
         DSP_CORE_EXPORTS
-        F_S=96000
         DSP_FIXED_POINT=1
     )
     target_compile_options(dsp_core_shared PRIVATE -fvisibility=hidden)

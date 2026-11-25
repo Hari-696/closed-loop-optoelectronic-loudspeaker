@@ -19,27 +19,19 @@
 namespace dsp {
 
 // ============================================================================
-// Volterra Filter Configuration
+// Volterra Filter Configuration (use constants from config.hpp)
 // ============================================================================
 
-// Memory depth and sparsity
-constexpr size_t VOLTERRA_M = VOLTERRA_MEMORY_M;           // 32
-constexpr int VOLTERRA_SPARSE_W = VOLTERRA_SPARSITY_WINDOW; // 4
+// Use constants from config.hpp:
+// VOLTERRA_MEMORY_M, VOLTERRA_SPARSITY_WINDOW, RLS_LAMBDA, RLS_UPDATE_DECIMATION
 
-// Coefficient counts after sparsification
-// 1st order: M = 32
-// 2nd order: diagonal + near-diagonal: M*(2*W+1) ≈ 32*9 = 288 (but symmetric, so ~144 unique)
-// 3rd order: near-diagonal triples: ~1200 as specified
-
-constexpr size_t VOLTERRA_1ST_COEFFS = VOLTERRA_M;
-constexpr size_t VOLTERRA_2ND_COEFFS_MAX = VOLTERRA_M * (2 * VOLTERRA_SPARSE_W + 1);  // 288
+constexpr size_t VOLTERRA_1ST_COEFFS = VOLTERRA_MEMORY_M;
+constexpr size_t VOLTERRA_2ND_COEFFS_MAX = VOLTERRA_MEMORY_M * (2 * VOLTERRA_SPARSITY_WINDOW + 1);  // 288
 constexpr size_t VOLTERRA_3RD_COEFFS_MAX = 1200;  // As specified in report
 
-// RLS configuration
-constexpr float RLS_LAMBDA = 0.998f;
+// RLS configuration (use from config.hpp)
 constexpr fixed::q31_t RLS_LAMBDA_Q31 = fixed::q31_from_float(RLS_LAMBDA);
 constexpr fixed::q31_t RLS_ONE_MINUS_LAMBDA_Q31 = fixed::q31_from_float(1.0f - RLS_LAMBDA);
-constexpr size_t RLS_UPDATE_DECIMATION = 4;  // Every 4th sample
 
 // ============================================================================
 // Sparse Volterra Coefficient Storage
@@ -56,7 +48,7 @@ struct Volterra1stOrder {
 struct Volterra2ndOrder {
     std::array<fixed::q31_t, VOLTERRA_2ND_COEFFS_MAX> g2;
     std::array<fixed::q31_t, VOLTERRA_2ND_COEFFS_MAX> p_inv;  // Inverse correlation diagonal (RLS)
-    uint16_t valid_mask[VOLTERRA_M];  // Bitmask of valid m2 for each m1
+    uint16_t valid_mask[VOLTERRA_MEMORY_M];  // Bitmask of valid m2 for each m1
 };
 
 // 3rd-order kernel: g3[m1][m2][m3] where max(|mi-mj|) ≤ W
@@ -77,7 +69,7 @@ struct VolterraFilter {
     Volterra3rdOrder order3;
     
     // Delay line for x_ref history (circular buffer)
-    std::array<fixed::q31_t, VOLTERRA_M> delay_line;
+    std::array<fixed::q31_t, VOLTERRA_MEMORY_M> delay_line;
     size_t delay_head = 0;
     
     // RLS state

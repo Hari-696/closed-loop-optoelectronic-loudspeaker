@@ -9,7 +9,7 @@
  * - RLS update every 4 samples with λ=0.998
  */
 
-#include "volterra_filter.hpp"
+#include "dsp/volterra_filter.hpp"
 #include <cmath>
 #include <algorithm>
 
@@ -18,12 +18,18 @@ namespace dsp {
 VolterraFilter g_volterra_filter{};
 
 // ============================================================================
+// Forward Declarations
+// ============================================================================
+
+static void generate_3rd_order_index_map(Volterra3rdOrder& order3) noexcept;
+
+// ============================================================================
 // Index Mapping for Sparse Volterra Kernels
 // ============================================================================
 
 // 2nd-order index: map (m1,m2) with m1≤m2 and m2-m1≤W to flat index
 DSP_INLINE size_t volterra_2nd_index(uint8_t m1, uint8_t m2) noexcept {
-    constexpr int W = VOLTERRA_SPARSE_W;
+    constexpr int W = VOLTERRA_SPARSITY_WINDOW;
     if (m1 > m2) std::swap(m1, m2);
     if (m2 - m1 > W) return SIZE_MAX;
     return static_cast<size_t>(m1) * (2 * W + 1) + static_cast<size_t>(m2 - m1 + W);
@@ -32,9 +38,9 @@ DSP_INLINE size_t volterra_2nd_index(uint8_t m1, uint8_t m2) noexcept {
 // 3rd-order: generate all valid triples (m1,m2,m3) with max|mi-mj|≤W
 // Precomputed at init into index_map
 
-void generate_3rd_order_index_map(VolterraFilter::Volterra3rdOrder& order3) noexcept {
-    constexpr int W = VOLTERRA_SPARSE_W;
-    constexpr size_t M = VOLTERRA_M;
+static void generate_3rd_order_index_map(Volterra3rdOrder& order3) noexcept {
+    constexpr int W = VOLTERRA_SPARSITY_WINDOW;
+    constexpr size_t M = VOLTERRA_MEMORY_M;
     
     size_t idx = 0;
     for (uint8_t m1 = 0; m1 < M; ++m1) {
@@ -67,7 +73,6 @@ bool volterra_filter_init(float input_scale, float output_scale) noexcept {
     F.order3.g3.fill(0);
     
     // Initialize RLS inverse correlation (P = δ⁻¹I, δ small)
-    constexpr fixed::q31_t delta = fixed::q31_from_float(0.01f);  // δ = 0.01
     constexpr fixed::q31_t delta_inv = fixed::q31_from_float(100.0f);  // 1/δ
     
     for (size_t i = 0; i < VOLTERRA_1ST_COEFFS; ++i) {
@@ -81,12 +86,12 @@ bool volterra_filter_init(float input_scale, float output_scale) noexcept {
     }
     
     // Generate 2nd-order valid masks
-    constexpr int W = VOLTERRA_SPARSE_W;
-    for (size_t m1 = 0; m1 < VOLTERRA_M; ++m1) {
+    constexpr int W = VOLTERRA_SPARSITY_WINDOW;
+    for (size_t m1 = 0; m1 < VOLTERRA_MEMORY_M; ++m1) {
         uint16_t mask = 0;
         for (int dm = -W; dm <= W; ++dm) {
             int m2 = static_cast<int>(m1) + dm;
-            if (m2 >= 0 && m2 < static_cast<int>(VOLTERRA_M)) {
+            if (m2 >= 0 && m2 < static_cast<int>(VOLTERRA_MEMORY_M)) {
                 mask |= (1u << (dm + W));
             }
         }
@@ -122,30 +127,30 @@ fixed::q31_t volterra_filter_eval(fixed::q31_t x_ref_q31) noexcept {
     
     // Update delay line (circular buffer)
     F.delay_line[F.delay_head] = x_ref_q31;
-    F.delay_head = (F.delay_head + 1) % VOLTERRA_M;
+    F.delay_head = (F.delay_head + 1) % VOLTERRA_MEMORY_M;
     
     Q31Accumulator acc;
     
     // ---- 1st Order: Σ g1[m] * x[n-m] ----
     for (size_t m = 0; m < VOLTERRA_1ST_COEFFS; ++m) {
-        size_t idx = (F.delay_head + VOLTERRA_M - m) % VOLTERRA_M;
+        size_t idx = (F.delay_head + VOLTERRA_MEMORY_M - m) % VOLTERRA_MEMORY_M;
         acc.mac(F.order1.g1[m], F.delay_line[idx]);
     }
     
     // ---- 2nd Order: Σ Σ g2[m1,m2] * x[n-m1] * x[n-m2] ----
     // Only compute for m1 ≤ m2, |m1-m2| ≤ W, exploit symmetry
-    constexpr int W = VOLTERRA_SPARSE_W;
-    for (size_t m1 = 0; m1 < VOLTERRA_M; ++m1) {
-        size_t idx1 = (F.delay_head + VOLTERRA_M - m1) % VOLTERRA_M;
+    constexpr int W = VOLTERRA_SPARSITY_WINDOW;
+    for (size_t m1 = 0; m1 < VOLTERRA_MEMORY_M; ++m1) {
+        size_t idx1 = (F.delay_head + VOLTERRA_MEMORY_M - m1) % VOLTERRA_MEMORY_M;
         fixed::q31_t x1 = F.delay_line[idx1];
         
         uint16_t mask = F.order2.valid_mask[m1];
         for (int dm = -W; dm <= W; ++dm) {
             if (!(mask & (1u << (dm + W)))) continue;
             int m2 = static_cast<int>(m1) + dm;
-            if (m2 < 0 || m2 >= static_cast<int>(VOLTERRA_M)) continue;
+            if (m2 < 0 || m2 >= static_cast<int>(VOLTERRA_MEMORY_M)) continue;
             
-            size_t idx2 = (F.delay_head + VOLTERRA_M - m2) % VOLTERRA_M;
+            size_t idx2 = (F.delay_head + VOLTERRA_MEMORY_M - m2) % VOLTERRA_MEMORY_M;
             fixed::q31_t x2 = F.delay_line[idx2];
             
             size_t coeff_idx = volterra_2nd_index(static_cast<uint8_t>(m1), static_cast<uint8_t>(m2));
@@ -176,9 +181,9 @@ fixed::q31_t volterra_filter_eval(fixed::q31_t x_ref_q31) noexcept {
     // ---- 3rd Order: Σ Σ Σ g3[m1,m2,m3] * x[n-m1] * x[n-m2] * x[n-m3] ----
     for (size_t i = 0; i < F.order3.num_active; ++i) {
         auto idxs = F.order3.index_map[i];
-        size_t idx1 = (F.delay_head + VOLTERRA_M - idxs.m1) % VOLTERRA_M;
-        size_t idx2 = (F.delay_head + VOLTERRA_M - idxs.m2) % VOLTERRA_M;
-        size_t idx3 = (F.delay_head + VOLTERRA_M - idxs.m3) % VOLTERRA_M;
+        size_t idx1 = (F.delay_head + VOLTERRA_MEMORY_M - idxs.m1) % VOLTERRA_MEMORY_M;
+        size_t idx2 = (F.delay_head + VOLTERRA_MEMORY_M - idxs.m2) % VOLTERRA_MEMORY_M;
+        size_t idx3 = (F.delay_head + VOLTERRA_MEMORY_M - idxs.m3) % VOLTERRA_MEMORY_M;
         
         fixed::q31_t x1 = F.delay_line[idx1];
         fixed::q31_t x2 = F.delay_line[idx2];
@@ -219,8 +224,8 @@ fixed::q31_t volterra_filter_eval(fixed::q31_t x_ref_q31) noexcept {
 // k = p * φ / (λ + p * φ²)
 // p_new = (p - k * φ * p) / λ = p * (1 - k*φ) / λ
 
-void volterra_filter_rls_update(fixed::q31_t x_ref_q31, fixed::q31_t x_meas_q31,
-                                 fixed::q31_t x_pred_q31, fixed::q31_t u_fb_q31) noexcept {
+void volterra_filter_rls_update(fixed::q31_t /*x_ref_q31*/, fixed::q31_t x_meas_q31,
+                                 fixed::q31_t x_pred_q31, fixed::q31_t /*u_fb_q31*/) noexcept {
     using namespace fixed;
     auto& F = g_volterra_filter;
     
@@ -242,7 +247,7 @@ void volterra_filter_rls_update(fixed::q31_t x_ref_q31, fixed::q31_t x_meas_q31,
     
     // ---- 1st Order RLS ----
     for (size_t m = 0; m < VOLTERRA_1ST_COEFFS; ++m) {
-        size_t idx = (F.delay_head + VOLTERRA_M - m) % VOLTERRA_M;
+        size_t idx = (F.delay_head + VOLTERRA_MEMORY_M - m) % VOLTERRA_MEMORY_M;
         fixed::q31_t phi = F.delay_line[idx];  // Regressor
         
         fixed::q31_t p = F.order1.lambda_inv[m];  // Actually storing P (inverse correlation)
@@ -277,18 +282,18 @@ void volterra_filter_rls_update(fixed::q31_t x_ref_q31, fixed::q31_t x_meas_q31,
     }
     
     // ---- 2nd Order RLS ----
-    constexpr int W = VOLTERRA_SPARSE_W;
-    for (size_t m1 = 0; m1 < VOLTERRA_M; ++m1) {
-        size_t idx1 = (F.delay_head + VOLTERRA_M - m1) % VOLTERRA_M;
+    constexpr int W = VOLTERRA_SPARSITY_WINDOW;
+    for (size_t m1 = 0; m1 < VOLTERRA_MEMORY_M; ++m1) {
+        size_t idx1 = (F.delay_head + VOLTERRA_MEMORY_M - m1) % VOLTERRA_MEMORY_M;
         fixed::q31_t x1 = F.delay_line[idx1];
         
         uint16_t mask = F.order2.valid_mask[m1];
         for (int dm = -W; dm <= W; ++dm) {
             if (!(mask & (1u << (dm + W)))) continue;
             int m2 = static_cast<int>(m1) + dm;
-            if (m2 < 0 || m2 >= static_cast<int>(VOLTERRA_M)) continue;
+            if (m2 < 0 || m2 >= static_cast<int>(VOLTERRA_MEMORY_M)) continue;
             
-            size_t idx2 = (F.delay_head + VOLTERRA_M - m2) % VOLTERRA_M;
+            size_t idx2 = (F.delay_head + VOLTERRA_MEMORY_M - m2) % VOLTERRA_MEMORY_M;
             fixed::q31_t x2 = F.delay_line[idx2];
             
             size_t coeff_idx = volterra_2nd_index(static_cast<uint8_t>(m1), static_cast<uint8_t>(m2));
@@ -329,9 +334,9 @@ void volterra_filter_rls_update(fixed::q31_t x_ref_q31, fixed::q31_t x_meas_q31,
     // ---- 3rd Order RLS ----
     for (size_t i = 0; i < F.order3.num_active; ++i) {
         auto idxs = F.order3.index_map[i];
-        size_t idx1 = (F.delay_head + VOLTERRA_M - idxs.m1) % VOLTERRA_M;
-        size_t idx2 = (F.delay_head + VOLTERRA_M - idxs.m2) % VOLTERRA_M;
-        size_t idx3 = (F.delay_head + VOLTERRA_M - idxs.m3) % VOLTERRA_M;
+        size_t idx1 = (F.delay_head + VOLTERRA_MEMORY_M - idxs.m1) % VOLTERRA_MEMORY_M;
+        size_t idx2 = (F.delay_head + VOLTERRA_MEMORY_M - idxs.m2) % VOLTERRA_MEMORY_M;
+        size_t idx3 = (F.delay_head + VOLTERRA_MEMORY_M - idxs.m3) % VOLTERRA_MEMORY_M;
         
         fixed::q31_t x1 = F.delay_line[idx1];
         fixed::q31_t x2 = F.delay_line[idx2];

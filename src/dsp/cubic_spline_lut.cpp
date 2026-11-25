@@ -7,9 +7,10 @@
  * Uses natural spline boundary conditions (second derivative = 0 at endpoints).
  */
 
-#include "cubic_spline_lut.hpp"
+#include "dsp/cubic_spline_lut.hpp"
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace dsp {
 
@@ -105,7 +106,6 @@ bool cubic_spline_lut_init(const float* voltage_samples, const float* displaceme
     // Each segment stores coefficients for cubic in dx (offset within segment)
     
     const float v_min = SPLINE_INPUT_MIN_V;
-    const float v_max = SPLINE_INPUT_MAX_V;
     const float seg_width = SPLINE_SEGMENT_WIDTH;
     
     // For each LUT segment, find which calibration interval it falls in
@@ -116,7 +116,6 @@ bool cubic_spline_lut_init(const float* voltage_samples, const float* displaceme
     
     for (size_t seg = 0; seg < SPLINE_NUM_SEGMENTS; ++seg) {
         float seg_start = v_min + static_cast<float>(seg) * seg_width;
-        float seg_end = seg_start + seg_width;
         float seg_mid = seg_start + 0.5f * seg_width;
         
         // Find calibration interval containing segment midpoint

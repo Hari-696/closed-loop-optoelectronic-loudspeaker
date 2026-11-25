@@ -165,4 +165,13 @@ DSP_INLINE SplineLUTInfo cubic_spline_lut_get_info() noexcept {
     };
 }
 
+/**
+ * @brief Alternative initialization from inverse-square model directly.
+ * 
+ * Generates calibration points from the physical model:
+ * P_rx ∝ 1/(d₀ - x)², I_ph = ℜ·P_rx, V_out = -I_ph·R_f
+ * Inverts to get x(V_out) for the LUT.
+ */
+bool cubic_spline_lut_init_from_model(float d0, float r_f, float responsivity, float p_tx_optical) noexcept;
+
 } // namespace dsp

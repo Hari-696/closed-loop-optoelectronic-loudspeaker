@@ -6,7 +6,7 @@
  * Runs at decimated rate (1 kHz) using EMA for curve smoothing.
  */
 
-#include "lsp_estimator.hpp"
+#include "dsp/lsp_estimator.hpp"
 #include <cmath>
 #include <algorithm>
 

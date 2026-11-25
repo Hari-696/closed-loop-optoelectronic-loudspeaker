@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <array>
+#include <cmath>
 #include "config.hpp"
 #include "fixed_point.hpp"
 

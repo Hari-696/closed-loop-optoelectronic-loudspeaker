@@ -6,7 +6,7 @@
  * All implementation is in fixed_point.hpp as inline functions.
  */
 
-#include "fixed_point.hpp"
+#include "dsp/fixed_point.hpp"
 
 namespace dsp {
 namespace fixed {

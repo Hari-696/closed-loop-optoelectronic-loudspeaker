@@ -11,10 +11,24 @@
 #include <cstdint>
 #include <cstddef>
 #include <type_traits>
-#include "config.hpp"
+
+// Helper macros (also defined in config.hpp)
+#ifndef DSP_INLINE
+#define DSP_INLINE inline
+#endif
 
 namespace dsp {
 namespace fixed {
+
+// ============================================================================
+// Fixed-Point Types and Constants
+// ============================================================================
+using q15_t = int16_t;                             ///< Q1.15 format
+using q31_t = int32_t;                             ///< Q1.31 format
+constexpr int Q15_SHIFT = 15;
+constexpr int Q31_SHIFT = 31;
+constexpr float Q15_SCALE = 32768.0f;              ///< 2^15
+constexpr float Q31_SCALE = 2147483648.0f;         ///< 2^31
 
 // ============================================================================
 // Q1.15 (q15_t) Operations
@@ -68,7 +82,10 @@ DSP_INLINE q15_t q15_sat_mul_q31(q15_t a, q31_t b) noexcept {
 
 DSP_INLINE q15_t q15_abs(q15_t x) noexcept {
     // Branchless absolute value with saturation for INT16_MIN
-    return (x == -32768) ? 32767 : (x < 0 ? -x : x);
+    // Avoid sign-conversion warning by using int32_t intermediate
+    int32_t val = static_cast<int32_t>(x);
+    if (val == -32768) return 32767;
+    return static_cast<q15_t>(val < 0 ? -val : val);
 }
 
 DSP_INLINE q15_t q15_neg(q15_t x) noexcept {
@@ -205,28 +222,7 @@ public:
 };
 
 // 64-bit accumulator for q31 × q31 MAC chains
-class Q31Accumulator {
-    __int128 acc_;  // GCC/Clang support 128-bit integers
-public:
-    DSP_INLINE Q31Accumulator() noexcept : acc_(0) {}
-    DSP_INLINE explicit Q31Accumulator(q31_t init) noexcept : acc_(static_cast<__int128>(init) << 31) {}
-    
-    DSP_INLINE void mac(q31_t a, q31_t b) noexcept {
-        acc_ += static_cast<__int128>(a) * static_cast<__int128>(b);
-    }
-    
-    DSP_INLINE q31_t to_q31() noexcept {
-        __int128 result = (acc_ + (__int128(1) << 30)) >> 31;
-        if (result > 2147483647LL) return 2147483647;
-        if (result < -2147483648LL) return -2147483648;
-        return static_cast<q31_t>(result);
-    }
-    
-    DSP_INLINE void reset() noexcept { acc_ = 0; }
-};
-
-// Fallback for compilers without __int128 (MSVC)
-#if defined(_MSC_VER) && !defined(__clang__)
+// Use two 64-bit integers to emulate 128-bit accumulation (portable, no __int128)
 class Q31Accumulator {
     int64_t acc_hi_;
     uint64_t acc_lo_;
@@ -235,18 +231,64 @@ public:
     DSP_INLINE explicit Q31Accumulator(q31_t init) noexcept 
         : acc_hi_(static_cast<int64_t>(init) >> 1), acc_lo_(static_cast<uint64_t>(init) << 63) {}
     
+    // Multiply two q31 values and add to 128-bit accumulator
+    // Uses standard C++ without compiler extensions
     DSP_INLINE void mac(q31_t a, q31_t b) noexcept {
-        // Use 64×64→128 multiply via builtin
-        __int128 prod = static_cast<__int128>(a) * static_cast<__int128>(b);
-        acc_lo_ += static_cast<uint64_t>(prod);
-        acc_hi_ += static_cast<int64_t>(prod >> 64) + (acc_lo_ < static_cast<uint64_t>(prod) ? 1 : 0);
+        // Split into high/low 32-bit parts for manual 64x64->128 multiply
+        // a = a_hi * 2^31 + a_lo, b = b_hi * 2^31 + b_lo
+        // where a_lo, b_lo are 31-bit unsigned
+        const int64_t a_hi = a >> 31;
+        const uint64_t a_lo = static_cast<uint64_t>(a) & 0x7FFFFFFF;
+        const int64_t b_hi = b >> 31;
+        const uint64_t b_lo = static_cast<uint64_t>(b) & 0x7FFFFFFF;
+        
+        // Compute partial products:
+        // a*b = a_hi*b_hi*2^62 + (a_hi*b_lo + a_lo*b_hi)*2^31 + a_lo*b_lo
+        const uint64_t p0 = a_lo * b_lo;                    // 62 bits max
+        const uint64_t p1 = static_cast<uint64_t>(a_hi) * b_lo;  // 32+31 bits
+        const uint64_t p2 = a_lo * static_cast<uint64_t>(b_hi);  // 31+32 bits
+        const int64_t p3 = a_hi * b_hi;                     // 62 bits max (signed)
+        
+        // Add to accumulator: acc_hi:acc_lo is 128-bit value
+        // First add p0 (low 62 bits)
+        uint64_t new_lo = acc_lo_ + p0;
+        int64_t carry = (new_lo < acc_lo_) ? 1 : 0;
+        
+        // Add p1 and p2 (shifted by 31 bits -> affect bits 31-92)
+        uint64_t p12 = p1 + p2;
+        uint64_t new_lo2 = new_lo + (p12 << 31);
+        carry += (new_lo2 < new_lo) ? 1 : 0;
+        
+        int64_t new_hi = acc_hi_ + p3 + static_cast<int64_t>(p12 >> 33) + carry;
+        
+        // Also add upper bits of p12 that go into hi
+        new_hi += static_cast<int64_t>(p12 >> 32);
+        
+        acc_lo_ = new_lo2;
+        acc_hi_ = new_hi;
     }
     
+    // Convert accumulated 128-bit value to q31 (shift right 31 with rounding)
     DSP_INLINE q31_t to_q31() noexcept {
-        // Approximate: shift 128-bit value right 31
-        uint64_t lo = acc_lo_ >> 31;
-        int64_t hi = (acc_hi_ << 33) | (acc_lo_ >> 31);
-        int64_t result = hi + (acc_lo_ & 0x40000000 ? 1 : 0);  // Rounding
+        // Combined value is (acc_hi_ << 64) | acc_lo_
+        // Shift right 31 bits with rounding: result = (combined + 2^30) >> 31
+        
+        // Extract bits for shift-right-31:
+        // Low 31 bits of acc_lo_ are the fractional part
+        // Bit 30 of acc_lo_ is the rounding bit
+        // Bits 31-63 of acc_lo_ become bits 0-32 of result
+        // acc_hi_ shifted left 33 bits contributes to upper bits
+        
+        uint64_t rounding_bit = (acc_lo_ >> 30) & 1;
+        int64_t result = static_cast<int64_t>(acc_lo_ >> 31);
+        result += (acc_hi_ << 33);
+        
+        // Add rounding
+        if (rounding_bit) {
+            result += 1;
+        }
+        
+        // Saturate to q31 range
         if (result > 2147483647LL) return 2147483647;
         if (result < -2147483648LL) return -2147483648;
         return static_cast<q31_t>(result);
@@ -254,7 +296,6 @@ public:
     
     DSP_INLINE void reset() noexcept { acc_hi_ = 0; acc_lo_ = 0; }
 };
-#endif
 
 // ============================================================================
 // Vector/Matrix Fixed-Point Types (2×2 for observer)

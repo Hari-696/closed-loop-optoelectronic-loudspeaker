@@ -6,8 +6,8 @@
  * JSONB payload with GIN indexing for flexible querying.
  */
 
-#include "pg_logger.hpp"
-#include "spsc_ring_buffer.hpp"
+#include "telemetry/pg_logger.hpp"
+#include "telemetry/spsc_ring_buffer.hpp"
 #include <libpq-fe.h>
 #include <chrono>
 #include <cstring>

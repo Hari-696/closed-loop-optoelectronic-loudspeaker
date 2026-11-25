@@ -43,10 +43,12 @@ extern LimiterState g_limiter_state;
 
 /**
  * @brief Initialize decoupling limiter.
+ * @return true on success
  */
-DSP_INLINE void decoupling_limiter_init() noexcept {
+DSP_INLINE bool decoupling_limiter_init() noexcept {
     g_limiter_state = LimiterState{};
     g_limiter_state.v_max_q31 = fixed::q31_from_float(LIMITER_V_NOMINAL);
+    return true;
 }
 
 /**
@@ -79,7 +81,6 @@ DSP_INLINE fixed::q31_t decoupling_limiter_compute_vmax(fixed::q31_t x_meas_q31)
     
     // In knee region - quadratic roll-off
     // normalized position in knee region: (|x| - knee) / (hard - knee)
-    fixed::q31_t range = q31_sat_sub(hard_q31, knee_q31);
     fixed::q31_t pos = q31_sat_sub(x_abs, knee_q31);
     
     // pos / range in Q31

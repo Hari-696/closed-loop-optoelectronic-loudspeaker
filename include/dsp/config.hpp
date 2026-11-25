@@ -85,16 +85,6 @@ constexpr float LIMITER_KNEE_RATIO = 0.9f;         ///< Soft limiting starts at 
 constexpr float LIMITER_HARD_RATIO = 1.0f;         ///< Hard saturation at X_LIM
 
 // ============================================================================
-// Fixed-Point Format (Section 4.2)
-// ============================================================================
-using q15_t = int16_t;                             ///< Q1.15 format
-using q31_t = int32_t;                             ///< Q1.31 format
-constexpr int Q15_SHIFT = 15;
-constexpr int Q31_SHIFT = 31;
-constexpr float Q15_SCALE = 32768.0f;              ///< 2^15
-constexpr float Q31_SCALE = 2147483648.0f;         ///< 2^31
-
-// ============================================================================
 // Telemetry Ring Buffer (Section 5.4)
 // ============================================================================
 constexpr size_t TELEMETRY_RING_DEPTH = 4096;      ///< Ring buffer depth [samples] ≈ 42.7 ms at 96 kHz
