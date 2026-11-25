@@ -51,8 +51,12 @@ constexpr float PHOTODIODE_AREA = 1e-6f;           ///< Active area [m²] = 1 mm
 // ============================================================================
 constexpr float R_F = 49900.0f;                    ///< TIA feedback resistor [Ω] = 49.9 kΩ
 constexpr float C_F = 56e-12f;                     ///< TIA feedback capacitance [F] = 56 pF
-constexpr float AA_FILTER_FC = 40000.0f;           ///< Anti-aliasing filter corner [Hz] = 40 kHz
-constexpr int AA_FILTER_ORDER = 4;                 ///< 4th-order Butterworth
+constexpr int AA_FILTER_ORDER = 6;                 ///< 6th-order elliptic
+constexpr float AA_FILTER_FPASS_HZ = 22000.0f;     ///< Passband edge [Hz] = 22 kHz (0.1 dB ripple)
+constexpr float AA_FILTER_RIPPLE_DB = 0.1f;        ///< Passband ripple [dB]
+constexpr float AA_FILTER_STOP_DB = 80.0f;         ///< Stopband attenuation [dB]
+constexpr float AA_FILTER_FSTOP_HZ = 48000.0f;     ///< Stopband edge [Hz] = 48 kHz (Nyquist)
+constexpr float I_PHOTODIODE_REST = 2.7e-6f;       ///< Photocurrent at d_0 = 18 mm [A] = 2.7 µA
 
 // ============================================================================
 // Volterra Filter Parameters (Section 4.2)
