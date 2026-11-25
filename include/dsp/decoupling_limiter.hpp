@@ -23,7 +23,7 @@ namespace dsp {
 // Soft knee at LIMITER_KNEE_RATIO * X_MAX, hard limit at X_LIM
 constexpr float LIMITER_KNEE_X = X_MAX * LIMITER_KNEE_RATIO;  // 10.8 mm
 constexpr float LIMITER_HARD_X = X_LIM;                        // 15 mm
-constexpr float LIMITER_V_NOMINAL = 5.0f;                      // Nominal DAC range [V]
+constexpr float LIMITER_V_NOMINAL = 1.0f;                      // Nominal full-scale (normalized ±1.0 Q31)
 constexpr float LIMITER_EXPONENT = 2.0f;                       // Quadratic roll-off
 
 // Limiter state

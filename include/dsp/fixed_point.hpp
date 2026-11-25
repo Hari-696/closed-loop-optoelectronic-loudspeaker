@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <type_traits>
+#include "config.hpp"
 
 // Helper macros (also defined in config.hpp)
 #ifndef DSP_INLINE
@@ -396,6 +397,33 @@ DSP_INLINE q31_t q31_cubic_spline_eval(const CubicCoeffsQ31& c, q31_t dx) noexce
     t = q31_sat_add(q31_sat_mul(t, dx), c.a1);
     t = q31_sat_add(q31_sat_mul(t, dx), c.a0);
     return t;
+}
+
+// ============================================================================
+// Voltage Conversion Helpers (Q31 normalization)
+// ============================================================================
+// Q31 represents normalized ±1.0 = full scale
+// ADC/DAC: ±1.0 Q31 = ±5 V (ADC/DAC range)
+// Amplifier: ±1.0 Q31 = ±150 V (voice coil drive)
+
+DSP_INLINE constexpr fixed::q31_t voltage_to_q31_adc(float v) noexcept {
+    // ±5 V → normalized ±1.0 Q31
+    return q31_from_float(v / VOLTAGE_FULL_SCALE_V);
+}
+
+DSP_INLINE constexpr float q31_to_voltage_adc(fixed::q31_t q) noexcept {
+    // ±1.0 Q31 → ±5 V
+    return q31_to_float(q) * VOLTAGE_FULL_SCALE_V;
+}
+
+DSP_INLINE constexpr fixed::q31_t voltage_to_q31_amp(float v) noexcept {
+    // ±150 V → normalized ±1.0 Q31
+    return q31_from_float(v / AMP_FULL_SCALE_V);
+}
+
+DSP_INLINE constexpr float q31_to_voltage_amp(fixed::q31_t q) noexcept {
+    // ±1.0 Q31 → ±150 V
+    return q31_to_float(q) * AMP_FULL_SCALE_V;
 }
 
 } // namespace fixed

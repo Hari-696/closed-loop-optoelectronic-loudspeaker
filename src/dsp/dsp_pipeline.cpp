@@ -52,7 +52,7 @@ bool dsp_pipeline_init() noexcept {
     ok &= cubic_spline_lut_init_from_model(D_0, R_F, PHOTODIODE_RESPONSIVITY, 1.0f);
     ok &= luenberger_observer_init(432.0f);  // 4× mechanical resonance
     ok &= mfb_controller_init(75.0f, CL_DAMPING_ZETA);
-    ok &= volterra_filter_init(1.0f / X_MAX, 5.0f);
+    ok &= volterra_filter_init(1.0f / X_MAX, 1.0f);
     ok &= decoupling_limiter_init();
     ok &= lsp_estimator_init();
     ok &= telemetry::spsc_ring_buffer_init();
@@ -80,24 +80,26 @@ void dsp_pipeline_reset() noexcept {
 // ============================================================================
 // ADC/DAC Conversion Helpers
 // ============================================================================
+// Q31 normalization: ±1.0 Q31 = ±5 V (ADC/DAC range)
 
 DSP_INLINE fixed::q31_t adc_to_q31_voltage(int32_t adc_code) noexcept {
-    // 24-bit signed ADC, ±5V range
-    // Q31 represents ±5V
-    constexpr float scale = 5.0f / 8388608.0f;  // 5V / 2^23
-    return fixed::q31_from_float(static_cast<float>(adc_code) * scale);
+    // 24-bit signed ADC, ±5V range → normalized ±1.0 Q31
+    // adc_code / 8388608.0f gives ±1.0 = ±5 V
+    return fixed::voltage_to_q31_adc(static_cast<float>(adc_code) / 8388608.0f);
 }
 
 DSP_INLINE fixed::q31_t adc_to_q31_current(int32_t adc_code) noexcept {
     // Current sense: 0.1Ω shunt, 50× INA, ±5V ADC = ±10A range
-    constexpr float scale = 10.0f / 8388608.0f;
-    return fixed::q31_from_float(static_cast<float>(adc_code) * scale);
+    // ADC voltage normalized to ±1.0 Q31 = ±5 V, then scaled by CURRENT_SCALE (5 V/A)
+    fixed::q31_t v_q31 = fixed::voltage_to_q31_adc(static_cast<float>(adc_code) / 8388608.0f);
+    return fixed::q31_sat_mul(v_q31, fixed::q31_from_float(1.0f / CURRENT_SCALE));
 }
 
 DSP_INLINE int32_t q31_voltage_to_dac(fixed::q31_t v_q31) noexcept {
-    // Q31 (±5V) → 24-bit signed DAC code
-    float v = fixed::q31_to_float(v_q31);
-    int32_t code = static_cast<int32_t>(v * 8388608.0f / 5.0f);
+    // ±1.0 Q31 (full scale = ±5 V) → 24-bit signed DAC code
+    // ±1.0 Q31 = full scale = ±8388607 codes
+    float v = fixed::q31_to_float(v_q31);  // ±1.0 = full scale
+    int32_t code = static_cast<int32_t>(v * 8388608.0f);
     if (code > 8388607) code = 8388607;
     if (code < -8388608) code = -8388608;
     return code;

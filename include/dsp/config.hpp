@@ -120,6 +120,15 @@ constexpr float DAC_FULL_SCALE = 8388608.0f;       ///< 2^23 (24-bit signed)
 constexpr float VOLTS_PER_LSB = ADC_VREF / ADC_FULL_SCALE;
 
 // ============================================================================
+// Amplifier & Voice Coil Scaling (Q31 normalization)
+// ============================================================================
+// Q31 represents normalized ±1.0 = full scale
+// ADC/DAC: ±1.0 Q31 = ±5 V (ADC/DAC range)
+// Amplifier: ±1.0 Q31 = ±150 V (voice coil drive)
+constexpr float VOLTAGE_FULL_SCALE_V = 5.0f;       ///< ADC/DAC full-scale [V]
+constexpr float AMP_FULL_SCALE_V = 150.0f;         ///< Amplifier/voice coil full-scale [V]
+
+// ============================================================================
 // Displacement Scaling (maps ±X_LIM to ±5V ADC range)
 // ============================================================================
 constexpr float DISPLACEMENT_SCALE = ADC_VREF / X_LIM;  ///< V/m = 5V / 0.015m = 333.33 V/m
