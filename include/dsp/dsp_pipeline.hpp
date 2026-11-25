@@ -137,6 +137,16 @@ DSP_INLINE float dsp_pipeline_get_reference_mm() noexcept {
     return fixed::q31_to_float(g_dsp_frame.x_ref) * 1000.0f;
 }
 
+/**
+ * @brief Get reference displacement in X_MAX units (for MFB controller).
+ * 
+ * MFB controller expects reference in X_MAX units (1.0 Q31 = X_MAX = 12 mm).
+ */
+DSP_INLINE fixed::q31_t dsp_pipeline_get_reference_xmax() noexcept {
+    // x_ref is in X_LIM units, convert to X_MAX: x_max = x_lim * (X_LIM / X_MAX)
+    return fixed::q31_sat_mul(g_dsp_frame.x_ref, fixed::q31_from_float(X_LIM / X_MAX));
+}
+
 } // namespace dsp
 
 // ============================================================================
@@ -170,6 +180,50 @@ DSP_API void dsp_reset_cabi(void) noexcept;
  * @param x_ref_mm Reference displacement in millimeters
  */
 DSP_API void dsp_set_reference_cabi(float x_ref_mm) noexcept;
+
+/**
+ * @brief Get MFB controller gains for debugging.
+ * 
+ * @param k1_out Pointer to store k1 (position gain)
+ * @param k2_out Pointer to store k2 (velocity gain)
+ * @param k_r_out Pointer to store k_r (reference gain)
+ * @return 0 on success, negative error code on failure
+ */
+DSP_API int dsp_get_mfb_gains_cabi(int32_t* k1_out, int32_t* k2_out, int32_t* k_r_out) noexcept;
+
+/**
+ * @brief Get MFB controller output for given inputs (debug).
+ * 
+ * @param x_ref_mm Reference displacement [mm]
+ * @param x_hat_mm Estimated displacement [mm]
+ * @param v_hat_mps Estimated velocity [m/s]
+ * @param u_fb_out Pointer to store u_fb in normalized Q31 (±1.0 = ±150V)
+ * @param fb_out Pointer to store fb component
+ * @param ff_out Pointer to store ff component
+ * @return 0 on success, negative error code on failure
+ */
+DSP_API int dsp_debug_mfb_step_cabi(float x_ref_mm, float x_hat_mm, float v_hat_mps, int32_t* u_fb_out, int32_t* fb_out, int32_t* ff_out) noexcept;
+
+/**
+ * @brief Debug full pipeline step (returns all internal signals).
+ * 
+ * @param x_ref_mm Reference displacement [mm]
+ * @param adc_disp ADC code for displacement
+ * @param adc_curr ADC code for current
+ * @param adc_volt ADC code for voltage
+ * @param x_meas_out Pointer to store x_meas [mm]
+ * @param x_hat_out Pointer to store x_hat [mm]
+ * @param v_hat_out Pointer to store v_hat [m/s]
+ * @param u_ff_out Pointer to store u_ff [normalized Q31]
+ * @param u_fb_out Pointer to store u_fb [normalized Q31]
+ * @param u_lim_out Pointer to store u_lim [normalized Q31]
+ * @param dac_code_out Pointer to store DAC code
+ * @return 0 on success, negative error code on failure
+ */
+DSP_API int dsp_debug_pipeline_step_cabi(float x_ref_mm, int32_t adc_disp, int32_t adc_curr, int32_t adc_volt,
+                                          float* x_meas_out, float* x_hat_out, float* v_hat_out,
+                                          int32_t* u_ff_out, int32_t* u_fb_out, int32_t* u_lim_out,
+                                          int32_t* dac_code_out) noexcept;
 
 /**
  * @brief C-ABI DSP step function.

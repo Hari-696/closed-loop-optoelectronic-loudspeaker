@@ -23,10 +23,15 @@ namespace dsp {
 
 constexpr size_t SPLINE_NUM_SEGMENTS = 256;        ///< Number of LUT segments (8-bit index)
 constexpr size_t SPLINE_COEFFS_PER_SEGMENT = 4;    ///< a0, a1, a2, a3 per segment
-constexpr float SPLINE_INPUT_MIN_V = -5.0f;        ///< Minimum input voltage [V]
-constexpr float SPLINE_INPUT_MAX_V = 5.0f;         ///< Maximum input voltage [V]
-constexpr float SPLINE_OUTPUT_MIN_X = -X_LIM;      ///< Minimum output displacement [m]
-constexpr float SPLINE_OUTPUT_MAX_X = X_LIM;       ///< Maximum output displacement [m]
+// Actual optical voltage range for operating range x ∈ [-12mm, 12mm]:
+// V_out = -I_ph*R_f, I_ph = 2.7µA at d=18mm (x=0) to ~30µA at d=6mm (x=12mm)
+// V_out ranges from -0.135V (x=0) to -1.22V (x=±12mm)
+// Use range [-2.0V, 0.0V] to cover operating range with margin
+constexpr float SPLINE_INPUT_MIN_V = -2.0f;        ///< Minimum input voltage [V]
+constexpr float SPLINE_INPUT_MAX_V = 0.0f;         ///< Maximum input voltage [V]
+// LUT output is normalized: 1.0 Q31 = X_LIM (15mm). Clamp values in normalized units.
+constexpr float SPLINE_OUTPUT_MIN_X = -1.0f;       ///< Minimum output displacement [normalized to X_LIM]
+constexpr float SPLINE_OUTPUT_MAX_X = 1.0f;        ///< Maximum output displacement [normalized to X_LIM]
 
 // Derived constants
 constexpr float SPLINE_INPUT_RANGE = SPLINE_INPUT_MAX_V - SPLINE_INPUT_MIN_V;

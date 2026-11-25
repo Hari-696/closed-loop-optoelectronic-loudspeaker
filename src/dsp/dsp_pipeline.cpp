@@ -84,14 +84,16 @@ void dsp_pipeline_reset() noexcept {
 
 DSP_INLINE fixed::q31_t adc_to_q31_voltage(int32_t adc_code) noexcept {
     // 24-bit signed ADC, ±5V range → normalized ±1.0 Q31
-    // adc_code / 8388608.0f gives ±1.0 = ±5 V
-    return fixed::voltage_to_q31_adc(static_cast<float>(adc_code) / 8388608.0f);
+    // adc_code * (5.0f / 8388608.0f) gives voltage in volts
+    constexpr float scale = 5.0f / 8388608.0f;
+    return fixed::voltage_to_q31_adc(static_cast<float>(adc_code) * scale);
 }
 
 DSP_INLINE fixed::q31_t adc_to_q31_current(int32_t adc_code) noexcept {
     // Current sense: 0.1Ω shunt, 50× INA, ±5V ADC = ±10A range
-    // ADC voltage normalized to ±1.0 Q31 = ±5 V, then scaled by CURRENT_SCALE (5 V/A)
-    fixed::q31_t v_q31 = fixed::voltage_to_q31_adc(static_cast<float>(adc_code) / 8388608.0f);
+    // ADC voltage in volts, then scaled by CURRENT_SCALE (5 V/A)
+    constexpr float scale = 5.0f / 8388608.0f;
+    fixed::q31_t v_q31 = fixed::voltage_to_q31_adc(static_cast<float>(adc_code) * scale);
     return fixed::q31_sat_mul(v_q31, fixed::q31_from_float(1.0f / CURRENT_SCALE));
 }
 
@@ -158,15 +160,24 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     // ================================================================
     // Stage 1: ADC → Physical Units (Q31)
     // ================================================================
-    fixed::q31_t v_adc_q31 = adc_to_q31_voltage(adc->displacement_adc);
+    fixed::q31_t v_adc_q31 = adc_to_q31_voltage(adc->displacement_adc);  // ±1.0 = ±5V
     fixed::q31_t i_meas_q31 = adc_to_q31_current(adc->current_adc);
     fixed::q31_t v_meas_q31 = adc_to_q31_voltage(adc->voltage_adc);
     
     // ================================================================
     // Stage 2: Cubic-Spline LUT Linearization
     // x_meas = S⁻¹(V_out)
+    // LUT expects voltage in Q31 where ±1.0 = ±1V. ADC gives ±1.0 = ±5V.
+    // Convert: v_lut = v_adc * 5.0
     // ================================================================
-    fixed::q31_t x_meas_q31 = cubic_spline_lut_eval_q31(v_adc_q31);
+    float v_adc_volts = fixed::q31_to_float(v_adc_q31) * 5.0f;  // ADC Q31 (5V FS) → volts
+    fixed::q31_t v_lut_q31 = fixed::q31_from_float(v_adc_volts);  // LUT Q31 (1V FS)
+    
+    // ================================================================
+    // Stage 2: Cubic-Spline LUT Linearization
+    // x_meas = S⁻¹(V_out)
+    // ================================================================
+    fixed::q31_t x_meas_q31 = cubic_spline_lut_eval_q31(v_lut_q31);
     
     // ================================================================
     // Stage 3: Luenberger Observer
@@ -187,8 +198,9 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     // ================================================================
     // Stage 5: MFB Feedback
     // u_fb = -K*x_hat + K_r*x_ref
+    // MFB controller expects x_ref in X_MAX units (1.0 = 12mm)
     // ================================================================
-    fixed::q31_t u_fb_q31 = mfb_controller_step(g_dsp_frame.x_ref, x_hat_q31, v_hat_q31);
+    fixed::q31_t u_fb_q31 = mfb_controller_step(dsp_pipeline_get_reference_xmax(), x_hat_q31, v_hat_q31);
     
     // ================================================================
     // Stage 6: Decoupling Limiter
@@ -290,6 +302,85 @@ DSP_API void dsp_reset_cabi(void) noexcept {
 
 DSP_API void dsp_set_reference_cabi(float x_ref_mm) noexcept {
     dsp::dsp_pipeline_set_reference(x_ref_mm);
+}
+
+DSP_API int dsp_get_mfb_gains_cabi(int32_t* k1_out, int32_t* k2_out, int32_t* k_r_out) noexcept {
+    if (!k1_out || !k2_out || !k_r_out) return -1;
+    *k1_out = dsp::g_mfb_gains.k1;
+    *k2_out = dsp::g_mfb_gains.k2;
+    *k_r_out = dsp::g_mfb_gains.k_r;
+    return 0;
+}
+
+DSP_API int dsp_debug_mfb_step_cabi(float x_ref_mm, float x_hat_mm, float v_hat_mps, int32_t* u_fb_out, int32_t* fb_out, int32_t* ff_out) noexcept {
+    if (!u_fb_out || !fb_out || !ff_out) return -1;
+    using namespace dsp;
+    using namespace fixed;
+    
+    fixed::q31_t x_ref_q31 = fixed::q31_from_float(x_ref_mm / 1000.0f / X_MAX);
+    fixed::q31_t x_hat_q31 = fixed::q31_from_float(x_hat_mm / 1000.0f / X_LIM);
+    fixed::q31_t v_hat_q31 = fixed::q31_from_float(v_hat_mps / 10.0f);
+    (void)x_ref_q31;  // Used via mfb_controller_step
+    
+    using namespace fixed;
+    const auto& G = g_mfb_gains;
+    
+    Q31Accumulator acc;
+    
+    // -K * x_hat = -(k1*x_hat + k2*v_hat)
+    acc.mac(G.k1, x_hat_q31);
+    acc.mac(G.k2, v_hat_q31);
+    fixed::q31_t fb = q31_neg(acc.to_q31());
+    
+    // K_r * x_ref
+    acc.reset();
+    acc.mac(G.k_r, fixed::q31_from_float(12.0f / 1000.0f / X_MAX));  // x_ref = 12mm
+    fixed::q31_t ff = acc.to_q31();
+    
+    // u_fb = fb + ff
+    fixed::q31_t u_fb_q31 = q31_sat_add(fb, ff);
+    
+    *u_fb_out = u_fb_q31;
+    *fb_out = fb;
+    *ff_out = ff;
+    return 0;
+}
+
+DSP_API int dsp_debug_pipeline_step_cabi(float x_ref_mm, int32_t adc_disp, int32_t adc_curr, int32_t adc_volt,
+                                          float* x_meas_out, float* x_hat_out, float* v_hat_out,
+                                          int32_t* u_ff_out, int32_t* u_fb_out, int32_t* u_lim_out,
+                                          int32_t* dac_code_out) noexcept {
+    if (!x_meas_out || !x_hat_out || !v_hat_out || !u_ff_out || !u_fb_out || !u_lim_out || !dac_code_out) return -1;
+    
+    // Create ADC frame
+    dsp::AdcFrame adc;
+    adc.displacement_adc = adc_disp;
+    adc.current_adc = adc_curr;
+    adc.voltage_adc = adc_volt;
+    adc.timestamp_ns = 0;
+    
+    dsp::DacFrame dac;
+    dac.dac_code = 0;
+    dac.timestamp_ns = 0;
+    
+    // Set reference
+    dsp::dsp_pipeline_set_reference(x_ref_mm);
+    
+    // Execute step
+    dsp::dsp_step(&adc, &dac);
+    
+    // Capture results (convert from normalized Q31 to physical units)
+    constexpr float X_LIM_MM = X_LIM * 1000.0f;  // 15mm
+    constexpr float VEL_SCALE_MMPS = 10.0f * 1000.0f;  // 10 m/s = 10000 mm/s
+    *x_meas_out = fixed::q31_to_float(dsp::g_dsp_frame.x_meas) * X_LIM_MM;
+    *x_hat_out = fixed::q31_to_float(dsp::g_dsp_frame.x_hat) * X_LIM_MM;
+    *v_hat_out = fixed::q31_to_float(dsp::g_dsp_frame.v_hat) * VEL_SCALE_MMPS;
+    *u_ff_out = dsp::g_dsp_frame.u_ff;
+    *u_fb_out = dsp::g_dsp_frame.u_fb;
+    *u_lim_out = dsp::g_dsp_frame.u_lim;
+    *dac_code_out = dac.dac_code;
+    
+    return 0;
 }
 
 DSP_API int dsp_step_cabi(const void* adc, void* dac) noexcept {

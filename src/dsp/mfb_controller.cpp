@@ -154,7 +154,7 @@ bool mfb_controller_init(float cl_pole_hz, float damping) noexcept {
     // Get discrete plant matrices from observer (same discretization)
     FloatMat22 A_c{0.0f, 1.0f, -K_MS0/M_MS, -R_MS/M_MS};
     FloatVec2 B_c{0.0f, BL_0/M_MS};
-    FloatVec2 C_c{1.0f, 0.0f};
+    // FloatVec2 C_c{1.0f, 0.0f};  // Unused - DC gain computed from continuous-time model
     
     float dt = T_S;
     
@@ -230,8 +230,11 @@ bool mfb_controller_init(float cl_pole_hz, float damping) noexcept {
     FloatVec2 K;
     compute_state_feedback_gain(A_d, B_d, z_re, z_im, K);
     
-    // Compute reference gain K_r
-    float K_r = compute_reference_gain(A_d, B_d, C_c, K);
+    // Compute reference gain K_r using CONTINUOUS-TIME DC gain
+    // Discrete-time DC gain is severely attenuated at 96 kHz sampling
+    // Continuous-time DC gain: x/V = Bl / (R_e * K_ms)
+    constexpr float DC_GAIN_M_PER_V = BL_0 / (R_E_25C * K_MS0);  // 14.2 / (6.8 * 19500) = 0.000107 m/V
+    constexpr float K_r = 1.0f / DC_GAIN_M_PER_V;  // 9346 V/m
     
     // Convert to Q31
     // K gains: input is state (±X_LIM, ±10 m/s), output is voltage (±150V = AMP_FULL_SCALE_V)

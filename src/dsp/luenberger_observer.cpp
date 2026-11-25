@@ -213,30 +213,72 @@ bool luenberger_observer_init(float observer_pole_hz) noexcept {
     A_L.m10 = A_d.m10 - L.y;
     A_L.m11 = A_d.m11;
     
-    // Convert to Q31
-    // Scaling: states are in physical units (m, m/s), inputs in V
-    // Q31 represents ±X_LIM for displacement, ±10 m/s for velocity, ±150V for voltage
+    // Convert to Q31 with proper state/input scaling
+    // State scaling: x_q31: 1.0 = X_LIM (0.015m), v_q31: 1.0 = 10 m/s
+    // Input scaling: u_q31: 1.0 = AMP_FULL_SCALE_V (150V)
+    //
+    // Physical update: x_new = A_d.x * x + B_d.x * u
+    // In Q31: x_q31 = x/X_LIM*2^31, u_q31 = u/AMP*2^31
+    // x_new = A_d.x * x + B_d.x * u
+    // x_q31_new = x_new/X_LIM*2^31 = A_d.x * (x_q31*X_LIM) / X_LIM + B_d.x * (u_q31*AMP) / X_LIM
+    //         = A_d.x * x_q31 + (B_d.x * AMP / X_LIM) * u_q31
+    // Similarly for velocity: v_q31 = v/10*2^31
+    // v_new = A_d.y * x + B_d.y * u
+    // v_q31_new = v_new/10*2^31 = (A_d.y * x_q31*X_LIM + B_d.y * u_q31*AMP) / 10 * 2^31 / 10? Wait.
+    // v_phys = v_q31 * 10 / 2^31
+    // v_phys_new = A_d.y * x_phys + B_d.y * u_phys
+    // v_q31_new = v_phys_new / 10 * 2^31 = (A_d.y * x_q31 * X_LIM + B_d.y * u_q31 * AMP) / 10 * 2^31 / 10? No.
+    // v_phys_new = A_d.y * x_phys + B_d.y * u_phys
+    // v_q31_new = v_phys_new / 10 * 2^31 = (A_d.y * x_q31 * X_LIM + B_d.y * u_q31 * AMP) / 10 * 2^31
+    // = A_d.y * x_q31 * (X_LIM / 10) + B_d.y * u_q31 * (AMP / 10)
+    // So B_d.y scaled = B_d.y * AMP / 10
     
-    auto to_q31_scaled = [](float val, float full_scale) -> fixed::q31_t {
-        return fixed::q31_from_float(val / full_scale);
+    auto to_q31 = [](float val) -> fixed::q31_t {
+        return fixed::q31_from_float(val);
     };
     
-    g_observer_matrices.a00 = to_q31_scaled(A_d.m00, 1.0f);
-    g_observer_matrices.a01 = to_q31_scaled(A_d.m01 * 10.0f, 1.0f);  // v contributes to x
-    g_observer_matrices.a10 = to_q31_scaled(A_d.m10 / 10.0f, 1.0f);  // x contributes to v
-    g_observer_matrices.a11 = to_q31_scaled(A_d.m11, 1.0f);
+    // A matrix scaling (state transition)
+    // x_new = a00*x + a01*v + b0*u
+    // v_new = a10*x + a11*v + b1*u
+    // x_q31 = x/X_LIM, v_q31 = v/10, u_q31 = u/AMP
+    // x_q31_new = a00*x_q31 + a01*(X_LIM/10)*v_q31 + b0*(AMP/X_LIM)*u_q31
+    // v_q31_new = a10*(X_LIM/10)*x_q31 + a11*v_q31 + b1*(AMP/10)*u_q31
     
-    g_observer_matrices.b0 = to_q31_scaled(B_d.x / AMP_FULL_SCALE_V, 1.0f);  // u in ±150V → x
-    g_observer_matrices.b1 = to_q31_scaled(B_d.y / AMP_FULL_SCALE_V, 1.0f);  // u in ±150V → v
+    constexpr float X_LIM_F = X_LIM;
+    constexpr float VEL_SCALE = 10.0f;
+    constexpr float AMP_F = AMP_FULL_SCALE_V;
+    constexpr float X_LIM_OVER_VEL = X_LIM_F / VEL_SCALE;    // X_LIM / 10
+    constexpr float VEL_OVER_X_LIM = VEL_SCALE / X_LIM_F;    // 10 / X_LIM
+    constexpr float AMP_OVER_X_LIM = AMP_F / X_LIM_F;         // 150 / 0.015 = 10000
+    constexpr float AMP_OVER_VEL = AMP_F / VEL_SCALE;         // 150 / 10 = 15
     
-    g_observer_matrices.l0 = to_q31_scaled(L.x, 1.0f);
-    g_observer_matrices.l1 = to_q31_scaled(L.y / 10.0f, 1.0f);  // y in m → v
+    g_observer_matrices.a00 = to_q31(A_d.m00);
+    g_observer_matrices.a01 = to_q31(A_d.m01 * VEL_OVER_X_LIM);   // a01 * (10/X_LIM)
+    g_observer_matrices.a10 = to_q31(A_d.m10 * X_LIM_OVER_VEL);   // a10 * (X_LIM/10)
+    g_observer_matrices.a11 = to_q31(A_d.m11);
     
-    // (A_d - L*C_d)
-    g_observer_matrices.a_l00 = to_q31_scaled(A_L.m00, 1.0f);
-    g_observer_matrices.a_l01 = to_q31_scaled(A_L.m01 * 10.0f, 1.0f);
-    g_observer_matrices.a_l10 = to_q31_scaled(A_L.m10 / 10.0f, 1.0f);
-    g_observer_matrices.a_l11 = to_q31_scaled(A_L.m11, 1.0f);
+    // B matrix: x gets B_d.x * AMP/X_LIM, v gets B_d.y * AMP/10
+    g_observer_matrices.b0 = to_q31(B_d.x * AMP_OVER_X_LIM);      // B_d.x * (AMP/X_LIM)
+    g_observer_matrices.b1 = to_q31(B_d.y * AMP_OVER_VEL);        // B_d.y * (AMP/10)
+    
+    // L matrix: L.x corrects x (measurement is x), L.y corrects v
+    // y = x (position measurement), so L.x corrects x directly, L.y corrects v
+    // L.x has units 1/s (like observer gain for position)
+    // L.y has units m/s per m = 1/s
+    // In Q31: L.x_q31 = L.x (dimensionless in Q31 update), L.y scaled by X_LIM/10
+    g_observer_matrices.l0 = to_q31(L.x);
+    g_observer_matrices.l1 = to_q31(L.y * X_LIM_OVER_VEL);  // L.y * (X_LIM/10)
+    
+    // (A_d - L*C_d) matrix scaling
+    // C_d = [1, 0], so L*C_d = [L.x, 0; L.y, 0]
+    // (A - LC)_00 = a00 - L.x
+    // (A - LC)_01 = a01
+    // (A - LC)_10 = a10 - L.y
+    // (A - LC)_11 = a11
+    g_observer_matrices.a_l00 = to_q31(A_L.m00);
+    g_observer_matrices.a_l01 = to_q31(A_L.m01 * VEL_OVER_X_LIM);
+    g_observer_matrices.a_l10 = to_q31(A_L.m10 * X_LIM_OVER_VEL);
+    g_observer_matrices.a_l11 = to_q31(A_L.m11);
     
     // Reset state
     luenberger_observer_reset();
