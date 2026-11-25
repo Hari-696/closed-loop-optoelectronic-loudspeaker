@@ -22,19 +22,30 @@ namespace dsp {
 DspFrame g_dsp_frame{};
 PipelineStats g_pipeline_stats{};
 
-// Cycle counter for profiling (Cortex-M7 DWT)
+// Cycle counter for profiling (Cortex-M7 DWT) - only on ARM
+#if defined(__arm__) || defined(__ARM_ARCH)
 static volatile uint32_t* const DWT_CYCCNT = reinterpret_cast<volatile uint32_t*>(0xE0001004);
 static volatile uint32_t* const DWT_CTRL = reinterpret_cast<volatile uint32_t*>(0xE0001000);
 static volatile uint32_t* const DEMCR = reinterpret_cast<volatile uint32_t*>(0xE000EDFC);
+#else
+// Host build: no cycle counter hardware
+static uint32_t dummy_cycle_counter = 0;
+static inline uint32_t get_cycle_count() noexcept { return 0; }
+#endif
 
 // ============================================================================
 // Initialization
 // ============================================================================
 
 bool dsp_pipeline_init() noexcept {
+#if defined(__arm__) || defined(__ARM_ARCH)
     // Enable cycle counter for profiling (Cortex-M7)
     *DEMCR |= (1 << 24);  // Enable DWT
     *DWT_CTRL |= (1 << 0);  // Enable cycle counter
+#else
+    // Host build: no cycle counter hardware
+    (void)dummy_cycle_counter;
+#endif
     
     // Initialize all submodules
     bool ok = true;
@@ -135,7 +146,12 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     using namespace fixed;
     
     // Start cycle counting
+#if defined(__arm__) || defined(__ARM_ARCH)
     uint32_t start_cycles = *DWT_CYCCNT;
+#else
+    uint32_t start_cycles = 0;
+    (void)start_cycles;  // Silence unused warning on host builds
+#endif
     
     // ================================================================
     // Stage 1: ADC → Physical Units (Q31)
@@ -243,7 +259,11 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     // ================================================================
     // Statistics
     // ================================================================
+#if defined(__arm__) || defined(__ARM_ARCH)
     uint32_t elapsed = *DWT_CYCCNT - start_cycles;
+#else
+    uint32_t elapsed = 0;
+#endif
     g_pipeline_stats.total_samples++;
     g_pipeline_stats.max_cycles = (elapsed > g_pipeline_stats.max_cycles) ? elapsed : g_pipeline_stats.max_cycles;
     g_pipeline_stats.min_cycles = (elapsed < g_pipeline_stats.min_cycles) ? elapsed : g_pipeline_stats.min_cycles;
