@@ -140,12 +140,36 @@ DSP_INLINE float dsp_pipeline_get_reference_mm() noexcept {
 } // namespace dsp
 
 // ============================================================================
-// C-ABI Entry Point (for shared library loading by external co-simulators)
+// C-ABI Entry Points (for shared library loading by external co-simulators)
 // ============================================================================
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * @brief Initialize the DSP pipeline.
+ * 
+ * Must be called before any other C-ABI function.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+DSP_API int dsp_init_cabi(void) noexcept;
+
+/**
+ * @brief Reset the DSP pipeline state.
+ * 
+ * Resets all internal state (filters, observers, limiters, statistics).
+ * Does not re-initialize submodules - use dsp_init_cabi() for full re-initialization.
+ */
+DSP_API void dsp_reset_cabi(void) noexcept;
+
+/**
+ * @brief Set the displacement reference.
+ * 
+ * @param x_ref_mm Reference displacement in millimeters
+ */
+DSP_API void dsp_set_reference_cabi(float x_ref_mm) noexcept;
 
 /**
  * @brief C-ABI DSP step function.
@@ -156,7 +180,7 @@ extern "C" {
  * @param dac Pointer to DacFrame output
  * @return 0 on success, negative error code on failure
  */
-int dsp_step_cabi(const void* adc, void* dac) noexcept;
+DSP_API int dsp_step_cabi(const void* adc, void* dac) noexcept;
 
 #ifdef __cplusplus
 }

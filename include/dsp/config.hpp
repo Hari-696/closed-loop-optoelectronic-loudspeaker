@@ -145,6 +145,17 @@ constexpr float VOLTAGE_SCALE = VOLTAGE_DIVIDER_RATIO;  ///< V/V
 #define DSP_NOINLINE __attribute__((noinline))
 #define DSP_RAMFUNC __attribute__((section(".ccmram")))  ///< For Cortex-M7 CCMRAM placement
 
+// DLL export/import macro for Windows shared library
+#if defined(_WIN32) || defined(__CYGWIN__)
+  #ifdef DSP_CORE_EXPORTS
+    #define DSP_API __declspec(dllexport)
+  #else
+    #define DSP_API __declspec(dllimport)
+  #endif
+#else
+  #define DSP_API
+#endif
+
 // Compile-time assertions
 static_assert(VOLTERRA_MEMORY_M == 32, "Volterra memory depth must be 32");
 static_assert(TELEMETRY_RING_DEPTH == 4096, "Ring buffer depth must be 4096");

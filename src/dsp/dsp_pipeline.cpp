@@ -253,13 +253,28 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
 }
 
 // ============================================================================
-// C-ABI Wrapper
+// C-ABI Wrappers
 // ============================================================================
 
-int dsp_step_cabi(const void* adc, void* dac) noexcept {
+extern "C" {
+
+DSP_API int dsp_init_cabi(void) noexcept {
+    return dsp::dsp_pipeline_init() ? 0 : -1;
+}
+
+DSP_API void dsp_reset_cabi(void) noexcept {
+    dsp::dsp_pipeline_reset();
+}
+
+DSP_API void dsp_set_reference_cabi(float x_ref_mm) noexcept {
+    dsp::dsp_pipeline_set_reference(x_ref_mm);
+}
+
+DSP_API int dsp_step_cabi(const void* adc, void* dac) noexcept {
     if (!adc || !dac) return -1;
-    dsp_step(static_cast<const AdcFrame*>(adc), static_cast<DacFrame*>(dac));
+    dsp::dsp_step(static_cast<const dsp::AdcFrame*>(adc), static_cast<dsp::DacFrame*>(dac));
     return 0;
 }
 
+} // extern "C"
 } // namespace dsp
