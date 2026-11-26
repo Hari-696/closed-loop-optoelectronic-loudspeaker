@@ -5,7 +5,7 @@
  * @brief State-feedback MFB controller with pole placement.
  * 
  * Control law: u_fb[k] = -K * x_hat[k] + K_r * x_ref[k]
- * Closed-loop poles: 60-90 Hz at ζ = 0.707
+ * Closed-loop poles: 110-120 Hz at ζ = 0.707 (above 108 Hz mechanical resonance)
  * Fixed-point q31 implementation.
  */
 
@@ -37,15 +37,15 @@ extern MFBGainsQ31 g_mfb_gains;
 /**
  * @brief Initialize MFB controller with pole placement.
  * 
- * Places closed-loop poles at 60-90 Hz with ζ = 0.707.
+ * Places closed-loop poles at 110-120 Hz with ζ = 0.707.
  * Computes K via Ackermann's formula on discrete plant (A_d, B_d).
  * Computes K_r for unity DC gain: K_r = 1 / (C_d * (I - (A_d - B_d*K))⁻¹ * B_d)
  * 
- * @param cl_pole_hz Desired closed-loop pole frequency [Hz] (60-90)
+ * @param cl_pole_hz Desired closed-loop pole frequency [Hz] (110-120)
  * @param damping Damping ratio ζ (default 0.707)
  * @return true on success
  */
-bool mfb_controller_init(float cl_pole_hz = 75.0f, float damping = CL_DAMPING_ZETA) noexcept;
+bool mfb_controller_init(float cl_pole_hz = 115.0f, float damping = CL_DAMPING_ZETA) noexcept;
 
 /**
  * @brief Compute feedback control action.
@@ -58,28 +58,11 @@ bool mfb_controller_init(float cl_pole_hz = 75.0f, float damping = CL_DAMPING_ZE
  * @return Control voltage [V] in Q31 (±5V)
  * 
  * Deterministic: 2 MACs + 1 MAC for reference, no branches.
+ * Not inlined to avoid register pressure issues with Q31Accumulator in pipeline context.
  */
-DSP_INLINE fixed::q31_t mfb_controller_step(fixed::q31_t x_ref_q31, 
-                                             fixed::q31_t x_hat_q31, 
-                                             fixed::q31_t v_hat_q31) noexcept {
-    using namespace fixed;
-    const auto& G = g_mfb_gains;
-    
-    Q31Accumulator acc;
-    
-    // -K * x_hat = -(k1*x_hat + k2*v_hat)
-    acc.mac(G.k1, x_hat_q31);
-    acc.mac(G.k2, v_hat_q31);
-    fixed::q31_t fb = q31_neg(acc.to_q31());
-    
-    // K_r * x_ref
-    acc.reset();
-    acc.mac(G.k_r, x_ref_q31);
-    fixed::q31_t ff = acc.to_q31();
-    
-    // u_fb = fb + ff
-    return q31_sat_add(fb, ff);
-}
+fixed::q31_t mfb_controller_step(fixed::q31_t x_ref_q31, 
+                                              fixed::q31_t x_hat_q31, 
+                                              fixed::q31_t v_hat_q31) noexcept;
 
 /**
  * @brief Get current controller gains (for diagnostics).

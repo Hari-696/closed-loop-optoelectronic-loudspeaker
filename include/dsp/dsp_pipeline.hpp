@@ -125,27 +125,27 @@ DSP_INLINE PipelineStats dsp_pipeline_get_stats() noexcept {
  * @brief Set reference displacement (from host/command interface).
  * 
  * @param x_ref_mm Reference displacement [mm]
+ * Stores reference in X_MAX units (1.0 Q31 = X_MAX = 12 mm) for MFB controller.
  */
 DSP_INLINE void dsp_pipeline_set_reference(float x_ref_mm) noexcept {
-    g_dsp_frame.x_ref = fixed::q31_from_float(x_ref_mm * 0.001f);  // mm → m
+    g_dsp_frame.x_ref = fixed::q31_from_float(x_ref_mm / 1000.0f / X_MAX);  // mm → X_MAX units
 }
 
 /**
- * @brief Get current reference displacement.
+ * @brief Get current reference displacement in mm.
  */
 DSP_INLINE float dsp_pipeline_get_reference_mm() noexcept {
-    return fixed::q31_to_float(g_dsp_frame.x_ref) * 1000.0f;
+    return fixed::q31_to_float(g_dsp_frame.x_ref) * X_MAX * 1000.0f;
 }
 
 /**
  * @brief Get reference displacement in X_MAX units (for MFB controller).
  * 
  * MFB controller expects reference in X_MAX units (1.0 Q31 = X_MAX = 12 mm).
+ * x_ref is already stored in X_MAX units by dsp_pipeline_set_reference().
+ * NOT inlined to ensure consistent register allocation with MFB step.
  */
-DSP_INLINE fixed::q31_t dsp_pipeline_get_reference_xmax() noexcept {
-    // x_ref is in X_LIM units, convert to X_MAX: x_max = x_lim * (X_LIM / X_MAX)
-    return fixed::q31_sat_mul(g_dsp_frame.x_ref, fixed::q31_from_float(X_LIM / X_MAX));
-}
+fixed::q31_t dsp_pipeline_get_reference_xmax() noexcept;
 
 } // namespace dsp
 

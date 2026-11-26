@@ -22,6 +22,14 @@ namespace dsp {
 DspFrame g_dsp_frame{};
 PipelineStats g_pipeline_stats{};
 
+// ============================================================================
+// Reference Access (non-inline for consistent register allocation)
+// ============================================================================
+
+fixed::q31_t dsp_pipeline_get_reference_xmax() noexcept {
+    return g_dsp_frame.x_ref;
+}
+
 // Cycle counter for profiling (Cortex-M7 DWT) - only on ARM
 #if defined(__arm__) || defined(__ARM_ARCH)
 static volatile uint32_t* const DWT_CYCCNT = reinterpret_cast<volatile uint32_t*>(0xE0001004);
@@ -51,7 +59,7 @@ bool dsp_pipeline_init() noexcept {
     bool ok = true;
     ok &= cubic_spline_lut_init_from_model(D_0, R_F, PHOTODIODE_RESPONSIVITY, 1.0f);
     ok &= luenberger_observer_init(432.0f);  // 4× mechanical resonance
-    ok &= mfb_controller_init(75.0f, CL_DAMPING_ZETA);
+    ok &= mfb_controller_init(115.0f, CL_DAMPING_ZETA);
     ok &= volterra_filter_init(1.0f / X_MAX, 1.0f);
     ok &= decoupling_limiter_init();
     ok &= lsp_estimator_init();
@@ -203,11 +211,44 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     fixed::q31_t u_fb_q31 = mfb_controller_step(dsp_pipeline_get_reference_xmax(), x_hat_q31, v_hat_q31);
     
     // ================================================================
-    // Stage 6: Decoupling Limiter
+    // Stage 6: Decoupling Limiter (manual implementation)
     // u_lim = sat(u_ff + u_fb, ±V_max(x_meas))
     // ================================================================
-    fixed::q31_t u_lim_q31 = decoupling_limiter_apply(u_ff_q31, u_fb_q31, x_meas_q31);
-    bool rls_freeze = decoupling_limiter_rls_freeze();
+    // Compute V_max based on displacement
+    fixed::q31_t x_abs = fixed::q31_abs(x_meas_q31);
+    fixed::q31_t v_max;
+    if (x_abs <= fixed::q31_from_float(LIMITER_KNEE_X / X_LIM)) {
+        v_max = fixed::q31_from_float(LIMITER_V_NOMINAL);
+    } else if (x_abs >= fixed::q31_from_float(1.0f)) {
+        v_max = 0;
+    } else {
+        fixed::q31_t pos = fixed::q31_sat_sub(x_abs, fixed::q31_from_float(LIMITER_KNEE_X / X_LIM));
+        fixed::q31_t norm = fixed::q31_sat_mul(pos, fixed::q31_from_float(1.0f / (1.0f - LIMITER_KNEE_RATIO)));
+        fixed::q31_t norm2 = fixed::q31_sat_mul(norm, norm);
+        fixed::q31_t one = fixed::q31_from_float(1.0f);
+        fixed::q31_t factor = fixed::q31_sat_sub(one, norm2);
+        v_max = fixed::q31_sat_mul(fixed::q31_from_float(LIMITER_V_NOMINAL), factor);
+    }
+    
+    // Sum feedforward and feedback (AMP units)
+    fixed::q31_t u_sum = fixed::q31_sat_add(u_ff_q31, u_fb_q31);
+    
+    // Symmetric saturation in AMP units
+    fixed::q31_t u_lim_amp_q31;
+    if (u_sum > v_max) {
+        u_lim_amp_q31 = v_max;
+    } else if (u_sum < fixed::q31_neg(v_max)) {
+        u_lim_amp_q31 = fixed::q31_neg(v_max);
+    } else {
+        u_lim_amp_q31 = u_sum;
+    }
+    
+    // RLS freeze flag
+    fixed::q31_t x_abs_rls = fixed::q31_abs(x_meas_q31);
+    bool rls_freeze = (x_abs_rls > fixed::q31_from_float(LIMITER_KNEE_X / X_LIM));
+    
+    // Convert limited voltage to ADC units for DAC output: AMP → ADC = ×(5/150) = ×1/30
+    fixed::q31_t u_lim_adc_q31 = fixed::q31_sat_mul(u_lim_amp_q31, fixed::q31_from_float(VOLTAGE_FULL_SCALE_V / AMP_FULL_SCALE_V));
     
     // ================================================================
     // Stage 7: Error Signal (for monitoring)
@@ -244,7 +285,7 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     // ================================================================
     // Stage 10: DAC Output
     // ================================================================
-    int32_t dac_code = q31_voltage_to_dac(u_lim_q31);
+    int32_t dac_code = q31_voltage_to_dac(u_lim_adc_q31);
     
     // ================================================================
     // Stage 11: Telemetry Push
@@ -261,7 +302,7 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     g_dsp_frame.v_hat = v_hat_q31;
     g_dsp_frame.u_ff = u_ff_q31;
     g_dsp_frame.u_fb = u_fb_q31;
-    g_dsp_frame.u_lim = u_lim_q31;
+    g_dsp_frame.u_lim = u_lim_amp_q31;
     g_dsp_frame.e = e_q31;
     g_dsp_frame.sample_count++;
     g_dsp_frame.limiter_active = g_limiter_state.limiter_active;
@@ -312,6 +353,136 @@ DSP_API int dsp_get_mfb_gains_cabi(int32_t* k1_out, int32_t* k2_out, int32_t* k_
     return 0;
 }
 
+DSP_API int dsp_debug_get_ref_cabi(int32_t* x_ref_out, int32_t* x_ref_mm_out) noexcept {
+    if (!x_ref_out || !x_ref_mm_out) return -1;
+    *x_ref_out = dsp::g_dsp_frame.x_ref;
+    // Convert X_MAX Q31 to mm * 1000
+    *x_ref_mm_out = static_cast<int32_t>(dsp::fixed::q31_to_float(dsp::g_dsp_frame.x_ref) * X_MAX * 1000000.0f);
+    return 0;
+}
+
+DSP_API int dsp_debug_mfb_direct_cabi(int32_t* u_fb_out) noexcept {
+    if (!u_fb_out) return -1;
+    using namespace dsp;
+    using namespace fixed;
+    fixed::q31_t x_ref_q31 = dsp_pipeline_get_reference_xmax();
+    fixed::q31_t x_hat_q31 = g_dsp_frame.x_hat;
+    fixed::q31_t v_hat_q31 = g_dsp_frame.v_hat;
+    fixed::q31_t u_fb_q31 = mfb_controller_step(x_ref_q31, x_hat_q31, v_hat_q31);
+    *u_fb_out = u_fb_q31;
+    return 0;
+}
+
+DSP_API int dsp_debug_get_mfb_ref_cabi(int32_t* x_ref_out) noexcept {
+    if (!x_ref_out) return -1;
+    *x_ref_out = dsp::dsp_pipeline_get_reference_xmax();
+    return 0;
+}
+
+DSP_API int dsp_debug_observer_step_cabi(int32_t u_observer_in, int32_t x_meas_q31, int32_t* x_hat_out, int32_t* v_hat_out) noexcept {
+    if (!x_hat_out || !v_hat_out) return -1;
+    using namespace dsp;
+    using namespace fixed;
+    fixed::q31_t u_q31 = static_cast<fixed::q31_t>(u_observer_in);
+    fixed::q31_t x_m_q31 = static_cast<fixed::q31_t>(x_meas_q31);
+    ObserverStateQ31 state = luenberger_observer_step(u_q31, x_m_q31);
+    *x_hat_out = state.x_hat;
+    *v_hat_out = state.v_hat;
+    return 0;
+}
+
+DSP_API int dsp_debug_full_step_cabi(int32_t adc_disp, int32_t /*adc_curr*/, int32_t /*adc_volt*/,
+                                      int32_t* x_meas_out, int32_t* x_hat_out, int32_t* v_hat_out,
+                                      int32_t* u_ff_out, int32_t* u_fb_out, int32_t* u_lim_out,
+                                      int32_t* dac_code_out) noexcept {
+    if (!x_meas_out || !x_hat_out || !v_hat_out || !u_ff_out || !u_fb_out || !u_lim_out || !dac_code_out) return -1;
+    using namespace dsp;
+    using namespace fixed;
+    
+    // Stage 1: ADC → Voltage
+    fixed::q31_t v_adc_q31 = adc_to_q31_voltage(adc_disp);
+    
+    // Stage 2: LUT
+    float v_adc_volts = fixed::q31_to_float(v_adc_q31) * 5.0f;
+    fixed::q31_t v_lut_q31 = fixed::q31_from_float(v_adc_volts);
+    fixed::q31_t x_meas_q31 = cubic_spline_lut_eval_q31(v_lut_q31);
+    
+    // Stage 3: Observer
+    fixed::q31_t u_observer_in = (g_dsp_frame.sample_count == 0) ? 0 : g_dsp_frame.u_lim;
+    ObserverStateQ31 obs_state = luenberger_observer_step(u_observer_in, x_meas_q31);
+    fixed::q31_t x_hat_q31 = obs_state.x_hat;
+    fixed::q31_t v_hat_q31 = obs_state.v_hat;
+    
+    // Stage 4: Volterra
+    fixed::q31_t u_ff_q31 = volterra_filter_eval(g_dsp_frame.x_ref);
+    
+    // Stage 5: MFB - compute manually to avoid Q31Accumulator register pressure issues
+    fixed::q31_t x_ref_q31 = dsp_pipeline_get_reference_xmax();
+    const auto& G = g_mfb_gains;
+    
+    // fb = -(k1*x_hat + k2*v_hat)
+    fixed::q31_t fb = fixed::q31_neg(
+        fixed::q31_sat_add(
+            fixed::q31_sat_mul(G.k1, x_hat_q31),
+            fixed::q31_sat_mul(G.k2, v_hat_q31)
+        )
+    );
+    
+    // ff = k_r * x_ref
+    fixed::q31_t ff = fixed::q31_sat_mul(G.k_r, x_ref_q31);
+    
+    // u_fb = fb + ff
+    fixed::q31_t u_fb_q31 = fixed::q31_sat_add(fb, ff);
+    
+    // Stage 6: Limiter - manual implementation to avoid register pressure issues
+    // Compute V_max based on displacement
+    fixed::q31_t x_abs = fixed::q31_abs(x_meas_q31);
+    fixed::q31_t knee_q31 = fixed::q31_from_float(LIMITER_KNEE_X / X_LIM);
+    fixed::q31_t v_max;
+    if (x_abs <= knee_q31) {
+        v_max = fixed::q31_from_float(LIMITER_V_NOMINAL);
+    } else if (x_abs >= fixed::q31_from_float(1.0f)) {
+        v_max = 0;
+    } else {
+        fixed::q31_t pos = fixed::q31_sat_sub(x_abs, fixed::q31_from_float(LIMITER_KNEE_X / X_LIM));
+        fixed::q31_t norm = fixed::q31_sat_mul(pos, fixed::q31_from_float(1.0f / (1.0f - LIMITER_KNEE_RATIO)));
+        fixed::q31_t norm2 = fixed::q31_sat_mul(norm, norm);
+        fixed::q31_t one = fixed::q31_from_float(1.0f);
+        fixed::q31_t factor = fixed::q31_sat_sub(one, norm2);
+        v_max = fixed::q31_sat_mul(fixed::q31_from_float(LIMITER_V_NOMINAL), factor);
+    }
+    
+    // Sum feedforward and feedback (AMP units)
+    fixed::q31_t u_sum = fixed::q31_sat_add(u_ff_q31, u_fb_q31);
+    
+    // Symmetric saturation in AMP units
+    fixed::q31_t u_lim_amp_q31;
+    if (u_sum > v_max) {
+        u_lim_amp_q31 = v_max;
+    } else if (u_sum < fixed::q31_neg(v_max)) {
+        u_lim_amp_q31 = fixed::q31_neg(v_max);
+    } else {
+        u_lim_amp_q31 = u_sum;
+    }
+    
+    // Scale to ADC units for DAC
+    fixed::q31_t u_lim_adc_q31 = fixed::q31_sat_mul(u_lim_amp_q31, fixed::q31_from_float(VOLTAGE_FULL_SCALE_V / AMP_FULL_SCALE_V));
+    
+    // Stage 7: DAC
+    int32_t dac_code = q31_voltage_to_dac(u_lim_adc_q31);
+    
+    // Return values (including x_ref for debug)
+    *x_meas_out = x_meas_q31;
+    *x_hat_out = x_hat_q31;
+    *v_hat_out = v_hat_q31;
+    *u_ff_out = u_ff_q31;
+    *u_fb_out = u_fb_q31;
+    *u_lim_out = u_lim_amp_q31;
+    *dac_code_out = dac_code;
+    
+    return 0;
+}
+
 DSP_API int dsp_debug_mfb_step_cabi(float x_ref_mm, float x_hat_mm, float v_hat_mps, int32_t* u_fb_out, int32_t* fb_out, int32_t* ff_out) noexcept {
     if (!u_fb_out || !fb_out || !ff_out) return -1;
     using namespace dsp;
@@ -320,9 +491,7 @@ DSP_API int dsp_debug_mfb_step_cabi(float x_ref_mm, float x_hat_mm, float v_hat_
     fixed::q31_t x_ref_q31 = fixed::q31_from_float(x_ref_mm / 1000.0f / X_MAX);
     fixed::q31_t x_hat_q31 = fixed::q31_from_float(x_hat_mm / 1000.0f / X_LIM);
     fixed::q31_t v_hat_q31 = fixed::q31_from_float(v_hat_mps / 10.0f);
-    (void)x_ref_q31;  // Used via mfb_controller_step
     
-    using namespace fixed;
     const auto& G = g_mfb_gains;
     
     Q31Accumulator acc;
@@ -334,7 +503,7 @@ DSP_API int dsp_debug_mfb_step_cabi(float x_ref_mm, float x_hat_mm, float v_hat_
     
     // K_r * x_ref
     acc.reset();
-    acc.mac(G.k_r, fixed::q31_from_float(12.0f / 1000.0f / X_MAX));  // x_ref = 12mm
+    acc.mac(G.k_r, x_ref_q31);
     fixed::q31_t ff = acc.to_q31();
     
     // u_fb = fb + ff

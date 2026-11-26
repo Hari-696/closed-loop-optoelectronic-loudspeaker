@@ -251,4 +251,30 @@ bool mfb_controller_init(float cl_pole_hz, float damping) noexcept {
     return true;
 }
 
+// ============================================================================
+// MFB Controller Step (non-inline implementation)
+// ============================================================================
+
+fixed::q31_t mfb_controller_step(fixed::q31_t x_ref_q31, 
+                                              fixed::q31_t x_hat_q31, 
+                                              fixed::q31_t v_hat_q31) noexcept {
+    using namespace fixed;
+    const auto& G = g_mfb_gains;
+    
+    Q31Accumulator acc;
+    
+    // -K * x_hat = -(k1*x_hat + k2*v_hat)
+    acc.mac(G.k1, x_hat_q31);
+    acc.mac(G.k2, v_hat_q31);
+    fixed::q31_t fb = q31_neg(acc.to_q31());
+    
+    // K_r * x_ref
+    acc.reset();
+    acc.mac(G.k_r, x_ref_q31);
+    fixed::q31_t ff = acc.to_q31();
+    
+    // u_fb = fb + ff
+    return q31_sat_add(fb, ff);
+}
+
 } // namespace dsp
