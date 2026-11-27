@@ -72,8 +72,8 @@ bool volterra_filter_init(float input_scale, float output_scale) noexcept {
     F.order2.g2.fill(0);
     F.order3.g3.fill(0);
     
-    // Initialize RLS inverse correlation (P = δ⁻¹I, δ small)
-    constexpr fixed::q31_t delta_inv = fixed::q31_from_float(100.0f);  // 1/δ
+    // Initialize RLS inverse correlation (P = δ⁻¹I, δ = RLS_DELTA)
+    fixed::q31_t delta_inv = fixed::q31_from_float(1.0f / RLS_DELTA);  // 1/δ
     
     for (size_t i = 0; i < VOLTERRA_1ST_COEFFS; ++i) {
         F.order1.lambda_inv[i] = fixed::q31_from_float(1.0f / RLS_LAMBDA);
@@ -247,6 +247,9 @@ void volterra_filter_rls_update(fixed::q31_t /*x_ref_q31*/, fixed::q31_t x_meas_
     // So error for adaptation should be: e = x_pred - x_meas (opposite of tracking error)
     // This way: if x_meas > x_pred (positive tracking error), e is negative,
     // update reduces coefficients, reducing u_ff to compensate
+    // Error for RLS: e = x_pred - x_meas
+    // If x_meas > x_pred (plant moved more than predicted), error < 0
+    // This makes coefficients more negative → u_ff more negative → reduces voltage → compensates
     fixed::q31_t error = q31_sat_sub(x_pred_q31, x_meas_q31);
     
     // Scale error to voltage domain for coefficient update

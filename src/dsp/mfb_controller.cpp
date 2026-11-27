@@ -280,7 +280,6 @@ DSP_API fixed::q31_t mfb_controller_step(fixed::q31_t x_ref_q31,
     fixed::q31_t ff = static_cast<fixed::q31_t>(ff_raw);
     
     // u_fb = fb + ff
-    // NEGATE FINAL RESULT: workaround for sign bug in toolchain
-    return q31_neg(q31_sat_add(fb, ff));
+    return q31_sat_add(fb, ff);
 }
 } // namespace dsp

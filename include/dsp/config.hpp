@@ -63,7 +63,8 @@ constexpr float I_PHOTODIODE_REST = 2.7e-6f;       ///< Photocurrent at d_0 = 18
 // ============================================================================
 constexpr size_t VOLTERRA_MEMORY_M = 32;           ///< Memory depth [samples] = 333 µs at 96 kHz
 constexpr size_t VOLTERRA_ORDER = 3;               ///< Maximum Volterra order (2nd + 3rd)
-constexpr float RLS_LAMBDA = 0.998f;               ///< RLS forgetting factor (τ ≈ 500 samples = 5.2 ms)
+constexpr float RLS_LAMBDA = 0.9995f;              ///< RLS forgetting factor (τ ≈ 2000 samples = 83 ms at 24 kHz update)
+constexpr float RLS_DELTA = 1.0f;                  ///< RLS initial inverse correlation (δ = 1.0, P₀ = 1/δ = 1.0)
 constexpr size_t RLS_UPDATE_DECIMATION = 4;        ///< Update every 4th sample (24 kHz)
 constexpr int VOLTERRA_SPARSITY_WINDOW = 4;        ///< |m_i - m_j| ≤ 4 for 3rd-order terms
 // ~1,200 active 3rd-order coefficients after sparsification

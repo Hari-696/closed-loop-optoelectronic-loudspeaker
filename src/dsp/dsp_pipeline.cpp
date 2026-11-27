@@ -180,7 +180,8 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     // Stage 2: Cubic-Spline LUT Linearization
     // x_meas = S⁻¹(V_out)
     // LUT expects voltage in Q31 where ±1.0 = ±1V. ADC gives ±1.0 = ±5V.
-    // Convert: v_lut = v_adc * 5.0
+    // Convert: v_lut = v_adc * 5.0 (scale from 5V FS to 1V FS)
+    // Use float intermediate to avoid Q31 saturation
     // ================================================================
     float v_adc_volts = fixed::q31_to_float(v_adc_q31) * 5.0f;  // ADC Q31 (5V FS) → volts
     fixed::q31_t v_lut_q31 = fixed::q31_from_float(v_adc_volts);  // LUT Q31 (1V FS)
@@ -466,6 +467,7 @@ DSP_API int dsp_debug_full_step_cabi(int32_t adc_disp, int32_t /*adc_curr*/, int
     fixed::q31_t v_adc_q31 = adc_to_q31_voltage(adc_disp);
     
     // Stage 2: LUT
+    // ADC Q31 (5V FS) → volts → LUT Q31 (1V FS)
     float v_adc_volts = fixed::q31_to_float(v_adc_q31) * 5.0f;
     fixed::q31_t v_lut_q31 = fixed::q31_from_float(v_adc_volts);
     fixed::q31_t x_meas_q31 = cubic_spline_lut_eval_q31(v_lut_q31);
