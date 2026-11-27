@@ -287,11 +287,10 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     }
     
     // ================================================================
-    // Stage 10: DAC Output (convert AMP units to ADC units)
+    // Stage 10: DAC Output (AMP units: ±1.0 Q31 = ±150 V)
     // ================================================================
-    // Convert AMP units (±1.0 = ±150V) to ADC units (±1.0 = ±5V)
-    fixed::q31_t u_lim_adc_q31 = fixed::q31_sat_mul(u_lim_amp_q31, fixed::q31_from_float(VOLTAGE_FULL_SCALE_V / AMP_FULL_SCALE_V));
-    int32_t dac_code = q31_voltage_to_dac(u_lim_adc_q31);
+    // q31_voltage_to_dac expects AMP units (±1.0 = ±150 V), pass directly
+    int32_t dac_code = q31_voltage_to_dac(u_lim_amp_q31);
     
     // ================================================================
     // Stage 11: Telemetry Push
@@ -529,9 +528,8 @@ DSP_API int dsp_debug_full_step_cabi(int32_t adc_disp, int32_t /*adc_curr*/, int
         u_lim_amp_q31 = u_sum;
     }
     
-    // Convert AMP units (±1.0 = ±150V) to ADC units (±1.0 = ±5V) for DAC
-    fixed::q31_t u_lim_adc_q31 = fixed::q31_sat_mul(u_lim_amp_q31, fixed::q31_from_float(VOLTAGE_FULL_SCALE_V / AMP_FULL_SCALE_V));
-    int32_t dac_code = q31_voltage_to_dac(u_lim_adc_q31);
+    // q31_voltage_to_dac expects AMP units (±1.0 = ±150 V), pass directly
+    int32_t dac_code = q31_voltage_to_dac(u_lim_amp_q31);
     
     // Return values (including x_ref for debug)
     *x_meas_out = x_meas_q31;
