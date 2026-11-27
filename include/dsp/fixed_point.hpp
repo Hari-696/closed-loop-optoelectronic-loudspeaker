@@ -295,7 +295,7 @@ public:
             // Shift right 31 with rounding: (hi_mag << 33) + ((lo_mag + 2^30) >> 31)
             uint64_t lo_mag_rounded = lo_mag + (1ULL << 30);
             int64_t carry = (lo_mag > lo_mag_rounded) ? 1 : 0;
-            int64_t hi_mag_scaled = (hi_mag << 33) + static_cast<int64_t>(lo_mag >> 31);
+            int64_t hi_mag_scaled = (hi_mag << 33) + static_cast<int64_t>(lo_mag_rounded >> 31);
             int64_t result = hi_mag_scaled + carry;
             
             // Result is positive magnitude, negate it

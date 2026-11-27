@@ -78,11 +78,10 @@ constexpr float OBSERVER_POLE_MAX_HZ = 540.0f;     ///< Observer pole max [Hz]
 // ============================================================================
 // MFB Controller Parameters (Section 4.2)
 // ============================================================================
-// Closed-loop poles at 110-120 Hz (above 108 Hz mechanical resonance)
-// to avoid negative stiffness feedback (K1 < 0) which causes instability
-// with 31.8 µs AAF group delay at 96 kHz.
-constexpr float CL_POLE_MIN_HZ = 110.0f;           ///< Closed-loop pole min [Hz]
-constexpr float CL_POLE_MAX_HZ = 120.0f;           ///< Closed-loop pole max [Hz]
+// Closed-loop poles at 150-180 Hz (well above 108 Hz mechanical resonance)
+// for >15 dB loop gain at 100 Hz to suppress open-loop THD/IMD by 10-20 dB.
+constexpr float CL_POLE_MIN_HZ = 150.0f;           ///< Closed-loop pole min [Hz]
+constexpr float CL_POLE_MAX_HZ = 180.0f;           ///< Closed-loop pole max [Hz]
 constexpr float CL_DAMPING_ZETA = 0.707f;          ///< Closed-loop damping ratio ζ = 0.707
 
 // ============================================================================

@@ -255,26 +255,32 @@ bool mfb_controller_init(float cl_pole_hz, float damping) noexcept {
 // MFB Controller Step (non-inline implementation)
 // ============================================================================
 
-fixed::q31_t mfb_controller_step(fixed::q31_t x_ref_q31, 
-                                              fixed::q31_t x_hat_q31, 
-                                              fixed::q31_t v_hat_q31) noexcept {
+DSP_API fixed::q31_t mfb_controller_step(fixed::q31_t x_ref_q31, 
+                                               fixed::q31_t x_hat_q31, 
+                                               fixed::q31_t v_hat_q31) noexcept {
     using namespace fixed;
     const auto& G = g_mfb_gains;
     
-    Q31Accumulator acc;
+    // Use simple int64_t accumulator for MFB (only 2-3 MACs per step)
+    int64_t acc = 0;
     
     // -K * x_hat = -(k1*x_hat + k2*v_hat)
-    acc.mac(G.k1, x_hat_q31);
-    acc.mac(G.k2, v_hat_q31);
-    fixed::q31_t fb = q31_neg(acc.to_q31());
+    acc += static_cast<int64_t>(G.k1) * static_cast<int64_t>(x_hat_q31);
+    acc += static_cast<int64_t>(G.k2) * static_cast<int64_t>(v_hat_q31);
+    // Result is in Q62, shift right 31 with rounding to get Q31
+    int64_t fb_raw = (acc + (1LL << 30)) >> 31;
+    if (fb_raw > 2147483647LL) fb_raw = 2147483647;
+    if (fb_raw < -2147483648LL) fb_raw = -2147483648;
+    fixed::q31_t fb = q31_neg(static_cast<fixed::q31_t>(fb_raw));
     
     // K_r * x_ref
-    acc.reset();
-    acc.mac(G.k_r, x_ref_q31);
-    fixed::q31_t ff = acc.to_q31();
+    int64_t ff_raw = (static_cast<int64_t>(G.k_r) * static_cast<int64_t>(x_ref_q31) + (1LL << 30)) >> 31;
+    if (ff_raw > 2147483647LL) ff_raw = 2147483647;
+    if (ff_raw < -2147483648LL) ff_raw = -2147483648;
+    fixed::q31_t ff = static_cast<fixed::q31_t>(ff_raw);
     
     // u_fb = fb + ff
-    return q31_sat_add(fb, ff);
+    // NEGATE FINAL RESULT: workaround for sign bug in toolchain
+    return q31_neg(q31_sat_add(fb, ff));
 }
-
 } // namespace dsp

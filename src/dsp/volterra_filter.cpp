@@ -241,7 +241,13 @@ void volterra_filter_rls_update(fixed::q31_t /*x_ref_q31*/, fixed::q31_t x_meas_
     // e_rls = x_meas - x_pred  (what the linear model couldn't predict)
     // We want Volterra to produce u_ff that cancels this
     
-    fixed::q31_t error = q31_sat_sub(x_meas_q31, x_pred_q31);
+    // Error for RLS: we want Volterra to cancel the nonlinear distortion
+    // x_pred is what the linear model predicts, x_meas is actual
+    // If x_meas > x_pred, plant moved MORE than predicted → need LESS feedforward
+    // So error for adaptation should be: e = x_pred - x_meas (opposite of tracking error)
+    // This way: if x_meas > x_pred (positive tracking error), e is negative,
+    // update reduces coefficients, reducing u_ff to compensate
+    fixed::q31_t error = q31_sat_sub(x_pred_q31, x_meas_q31);
     
     // Scale error to voltage domain for coefficient update
     // The gradient of u_ff w.r.t. coefficients is the regressor φ

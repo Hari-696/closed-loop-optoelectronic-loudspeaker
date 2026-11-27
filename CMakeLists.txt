@@ -144,6 +144,7 @@ if(NOT DEFINED ENV{ARM_TOOLCHAIN})
         DSP_FIXED_POINT=1
     )
     target_compile_options(dsp_core_shared PRIVATE -fvisibility=hidden)
+    target_link_options(dsp_core_shared PRIVATE -Wl,--export-all-symbols)
     set_target_properties(dsp_core_shared PROPERTIES
         OUTPUT_NAME "dsp_core"
         SOVERSION 1

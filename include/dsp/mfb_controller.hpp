@@ -60,9 +60,9 @@ bool mfb_controller_init(float cl_pole_hz = 115.0f, float damping = CL_DAMPING_Z
  * Deterministic: 2 MACs + 1 MAC for reference, no branches.
  * Not inlined to avoid register pressure issues with Q31Accumulator in pipeline context.
  */
-fixed::q31_t mfb_controller_step(fixed::q31_t x_ref_q31, 
-                                              fixed::q31_t x_hat_q31, 
-                                              fixed::q31_t v_hat_q31) noexcept;
+DSP_API fixed::q31_t mfb_controller_step(fixed::q31_t x_ref_q31, 
+                                             fixed::q31_t x_hat_q31, 
+                                             fixed::q31_t v_hat_q31) noexcept;
 
 /**
  * @brief Get current controller gains (for diagnostics).
