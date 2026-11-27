@@ -80,6 +80,9 @@ struct VolterraFilter {
     // Input scaling factors
     fixed::q31_t input_scale_q31;   // x_ref scaling to Q31
     fixed::q31_t output_scale_q31;  // u_ff scaling from Q31
+    
+    // Disable nonlinear terms (2nd/3rd order) for stability
+    bool disable_nonlinear = true;
 };
 
 extern VolterraFilter g_volterra_filter;

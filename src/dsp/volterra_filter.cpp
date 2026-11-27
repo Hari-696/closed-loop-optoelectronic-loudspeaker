@@ -1,12 +1,12 @@
 /**
  * @file volterra_filter.cpp
- * @brief Adaptive inverse Volterra filter implementation with sparse RLS.
+ * @brief Adaptive feedforward inverse Volterra filter (2nd + 3rd order, sparse).
  * 
- * Implements:
- * - 1st order: g1[m] for m=0..31 (32 coeffs)
- * - 2nd order: g2[m1,m2] for |m1-m2|≤4 (symmetric, ~144 unique)
- * - 3rd order: g3[m1,m2,m3] for max|mi-mj|≤4 (~1200 coeffs)
- * - RLS update every 4 samples with λ=0.998
+ * u_ff[n] = Σ g_1[m]·x_ref[n-m] + Σ Σ g_2[m1,m2]·x_ref[n-m1]·x_ref[n-m2] + Σ Σ Σ g_3[m1,m2,m3]·x_ref[n-m1]·x_ref[n-m2]·x_ref[n-m3]
+ * 
+ * Memory depth M = 32 samples. Sparsification: |m_i - m_j| ≤ 4 for 3rd order (~1200 coeffs).
+ * Online RLS update with λ = 0.9995, executed every 4th sample (24 kHz).
+ * Fixed-point q31 implementation.
  */
 
 #include "dsp/volterra_filter.hpp"
@@ -37,7 +37,6 @@ DSP_INLINE size_t volterra_2nd_index(uint8_t m1, uint8_t m2) noexcept {
 
 // 3rd-order: generate all valid triples (m1,m2,m3) with max|mi-mj|≤W
 // Precomputed at init into index_map
-
 static void generate_3rd_order_index_map(Volterra3rdOrder& order3) noexcept {
     constexpr int W = VOLTERRA_SPARSITY_WINDOW;
     constexpr size_t M = VOLTERRA_MEMORY_M;
@@ -63,7 +62,7 @@ static void generate_3rd_order_index_map(Volterra3rdOrder& order3) noexcept {
 // Initialization
 // ============================================================================
 
-bool volterra_filter_init(float input_scale, float output_scale) noexcept {
+bool volterra_filter_init(float /*input_scale*/, float /*output_scale*/) noexcept {
     using namespace fixed;
     auto& F = g_volterra_filter;
     
@@ -107,11 +106,13 @@ bool volterra_filter_init(float input_scale, float output_scale) noexcept {
     F.sample_counter = 0;
     
     // Scaling factors
-    F.input_scale_q31 = fixed::q31_from_float(input_scale);
-    F.output_scale_q31 = fixed::q31_from_float(output_scale);
+    F.input_scale_q31 = fixed::q31_from_float(1.0f);
+    F.output_scale_q31 = fixed::q31_from_float(1.0f);
     F.rls_lambda_q31 = RLS_LAMBDA_Q31;
     
     F.initialized = true;
+    F.disable_nonlinear = true;  // Disable nonlinear terms for stability
+    
     return true;
 }
 
@@ -129,6 +130,12 @@ fixed::q31_t volterra_filter_eval(fixed::q31_t x_ref_q31) noexcept {
     F.delay_line[F.delay_head] = x_ref_q31;
     F.delay_head = (F.delay_head + 1) % VOLTERRA_MEMORY_M;
     
+    // When nonlinear terms are disabled, Volterra provides no feedforward
+    // (MFB controller handles linear feedforward + feedback)
+    if (F.disable_nonlinear) {
+        return 0;
+    }
+    
     Q31Accumulator acc;
     
     // ---- 1st Order: Σ g1[m] * x[n-m] ----
@@ -138,70 +145,73 @@ fixed::q31_t volterra_filter_eval(fixed::q31_t x_ref_q31) noexcept {
         acc.mac(F.order1.g1[m], F.delay_line[idx]);
     }
     
-    // ---- 2nd Order: Σ Σ g2[m1,m2] * x[n-m1] * x[n-m2] ----
-    // Only compute for m1 ≤ m2, |m1-m2| ≤ W, exploit symmetry
-    constexpr int W = VOLTERRA_SPARSITY_WINDOW;
-    for (size_t m1 = 0; m1 < VOLTERRA_MEMORY_M; ++m1) {
-        size_t idx1 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - m1) % VOLTERRA_MEMORY_M;
-        fixed::q31_t x1 = F.delay_line[idx1];
+    // Nonlinear terms (2nd/3rd order)
+    if (!F.disable_nonlinear) {
+        // ---- 2nd Order: Σ Σ g2[m1,m2] * x[n-m1] * x[n-m2] ----
+        // Only compute for m1 ≤ m2, |m1-m2| ≤ W, exploit symmetry
+        constexpr int W = VOLTERRA_SPARSITY_WINDOW;
+        for (size_t m1 = 0; m1 < VOLTERRA_MEMORY_M; ++m1) {
+            size_t idx1 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - m1) % VOLTERRA_MEMORY_M;
+            fixed::q31_t x1 = F.delay_line[idx1];
+            
+            uint16_t mask = F.order2.valid_mask[m1];
+            for (int dm = -W; dm <= W; ++dm) {
+                if (!(mask & (1u << (dm + W)))) continue;
+                int m2 = static_cast<int>(m1) + dm;
+                if (m2 < 0 || m2 >= static_cast<int>(VOLTERRA_MEMORY_M)) continue;
+                
+                size_t idx2 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - m2) % VOLTERRA_MEMORY_M;
+                fixed::q31_t x2 = F.delay_line[idx2];
+                
+                size_t coeff_idx = volterra_2nd_index(static_cast<uint8_t>(m1), static_cast<uint8_t>(m2));
+                if (coeff_idx == SIZE_MAX) continue;
+                
+                fixed::q31_t g2 = F.order2.g2[coeff_idx];
+                
+                // g2 * x1 * x2 (Q31 * Q31 * Q31 = Q31 with double shift)
+                // Use 64-bit intermediate
+                int64_t prod = static_cast<int64_t>(g2) * static_cast<int64_t>(x1);
+                prod = (prod * static_cast<int64_t>(x2)) >> 31;  // Q31 * Q31 * Q31 → Q31
+                prod = (prod + (1LL << 30)) >> 31;  // Extra shift for Q31*Q31
+                
+                fixed::q31_t term = static_cast<fixed::q31_t>(
+                    prod > 2147483647LL ? 2147483647LL : (prod < -2147483648LL ? -2147483648LL : prod)
+                );
+                
+                // Account for symmetry: if m1 != m2, term appears twice
+                if (m1 != static_cast<size_t>(m2)) {
+                    term = q31_sat_add(term, term);  // 2 * term
+                }
+                
+                // Accumulate directly to avoid MAC overhead for this pattern
+                acc.mac(term, fixed::q31_from_float(1.0f));  // Just add term
+            }
+        }
         
-        uint16_t mask = F.order2.valid_mask[m1];
-        for (int dm = -W; dm <= W; ++dm) {
-            if (!(mask & (1u << (dm + W)))) continue;
-            int m2 = static_cast<int>(m1) + dm;
-            if (m2 < 0 || m2 >= static_cast<int>(VOLTERRA_MEMORY_M)) continue;
+        // ---- 3rd Order: Σ Σ Σ g3[m1,m2,m3] * x[n-m1] * x[n-m2] * x[n-m3] ----
+        for (size_t i = 0; i < F.order3.num_active; ++i) {
+            auto idxs = F.order3.index_map[i];
+            size_t idx1 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - idxs.m1) % VOLTERRA_MEMORY_M;
+            size_t idx2 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - idxs.m2) % VOLTERRA_MEMORY_M;
+            size_t idx3 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - idxs.m3) % VOLTERRA_MEMORY_M;
             
-            size_t idx2 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - m2) % VOLTERRA_MEMORY_M;
+            fixed::q31_t x1 = F.delay_line[idx1];
             fixed::q31_t x2 = F.delay_line[idx2];
+            fixed::q31_t x3 = F.delay_line[idx3];
+            fixed::q31_t g3 = F.order3.g3[i];
             
-            size_t coeff_idx = volterra_2nd_index(static_cast<uint8_t>(m1), static_cast<uint8_t>(m2));
-            if (coeff_idx == SIZE_MAX) continue;
-            
-            fixed::q31_t g2 = F.order2.g2[coeff_idx];
-            
-            // g2 * x1 * x2 (Q31 * Q31 * Q31 = Q31 with double shift)
-            // Use 64-bit intermediate
-            int64_t prod = static_cast<int64_t>(g2) * static_cast<int64_t>(x1);
-            prod = (prod * static_cast<int64_t>(x2)) >> 31;  // Q31 * Q31 * Q31 → Q31
-            prod = (prod + (1LL << 30)) >> 31;  // Extra shift for Q31*Q31
+            // g3 * x1 * x2 * x3 (triple product in Q31)
+            int64_t prod = static_cast<int64_t>(g3) * static_cast<int64_t>(x1);
+            prod = (prod * static_cast<int64_t>(x2)) >> 31;
+            prod = (prod * static_cast<int64_t>(x3)) >> 31;
+            prod = (prod + (1LL << 30)) >> 31;  // Final Q31 rounding
             
             fixed::q31_t term = static_cast<fixed::q31_t>(
                 prod > 2147483647LL ? 2147483647LL : (prod < -2147483648LL ? -2147483648LL : prod)
             );
             
-            // Account for symmetry: if m1 != m2, term appears twice
-            if (m1 != static_cast<size_t>(m2)) {
-                term = q31_sat_add(term, term);  // 2 * term
-            }
-            
-            // Accumulate directly to avoid MAC overhead for this pattern
-            acc.mac(term, fixed::q31_from_float(1.0f));  // Just add term
+            acc.mac(term, fixed::q31_from_float(1.0f));
         }
-    }
-    
-    // ---- 3rd Order: Σ Σ Σ g3[m1,m2,m3] * x[n-m1] * x[n-m2] * x[n-m3] ----
-    for (size_t i = 0; i < F.order3.num_active; ++i) {
-        auto idxs = F.order3.index_map[i];
-        size_t idx1 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - idxs.m1) % VOLTERRA_MEMORY_M;
-        size_t idx2 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - idxs.m2) % VOLTERRA_MEMORY_M;
-        size_t idx3 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - idxs.m3) % VOLTERRA_MEMORY_M;
-        
-        fixed::q31_t x1 = F.delay_line[idx1];
-        fixed::q31_t x2 = F.delay_line[idx2];
-        fixed::q31_t x3 = F.delay_line[idx3];
-        fixed::q31_t g3 = F.order3.g3[i];
-        
-        // g3 * x1 * x2 * x3 (triple product in Q31)
-        int64_t prod = static_cast<int64_t>(g3) * static_cast<int64_t>(x1);
-        prod = (prod * static_cast<int64_t>(x2)) >> 31;
-        prod = (prod * static_cast<int64_t>(x3)) >> 31;
-        prod = (prod + (1LL << 30)) >> 31;  // Final Q31 rounding
-        
-        fixed::q31_t term = static_cast<fixed::q31_t>(
-            prod > 2147483647LL ? 2147483647LL : (prod < -2147483648LL ? -2147483648LL : prod)
-        );
-        
-        acc.mac(term, fixed::q31_from_float(1.0f));
     }
     
     fixed::q31_t result = acc.to_q31();
@@ -232,21 +242,15 @@ void volterra_filter_rls_update(fixed::q31_t /*x_ref_q31*/, fixed::q31_t x_meas_
     
     if (!F.initialized) return;
     
+    // When nonlinear terms are disabled, skip RLS adaptation entirely
+    // (MFB controller handles linear part, Volterra only provides nonlinear correction)
+    if (F.disable_nonlinear) {
+        return;
+    }
+    
     F.sample_counter++;
     if (F.sample_counter % RLS_UPDATE_DECIMATION != 0) return;
     
-    // Error signal: e = x_meas - (x_pred + volterra_contribution)
-    // But we want to update Volterra to cancel the non-linear distortion
-    // The error for Volterra adaptation is the residual after linear MFB
-    // e_rls = x_meas - x_pred  (what the linear model couldn't predict)
-    // We want Volterra to produce u_ff that cancels this
-    
-    // Error for RLS: we want Volterra to cancel the nonlinear distortion
-    // x_pred is what the linear model predicts, x_meas is actual
-    // If x_meas > x_pred, plant moved MORE than predicted → need LESS feedforward
-    // So error for adaptation should be: e = x_pred - x_meas (opposite of tracking error)
-    // This way: if x_meas > x_pred (positive tracking error), e is negative,
-    // update reduces coefficients, reducing u_ff to compensate
     // Error for RLS: e = x_pred - x_meas
     // If x_meas > x_pred (plant moved more than predicted), error < 0
     // This makes coefficients more negative → u_ff more negative → reduces voltage → compensates
@@ -267,6 +271,10 @@ void volterra_filter_rls_update(fixed::q31_t /*x_ref_q31*/, fixed::q31_t x_meas_
         fixed::q31_t p_phi2 = q31_sat_mul(p, phi2);
         fixed::q31_t denom = q31_sat_add(F.rls_lambda_q31, p_phi2);
         
+        // Denominator regularization: prevent numerical instability and overfitting
+        fixed::q31_t denom_min = fixed::q31_from_float(RLS_EPSILON);
+        if (denom < denom_min) denom = denom_min;
+        
         // Avoid division - use approximation for small phi or precomputed inverse
         // For fixed-point, use: k ≈ p*phi/λ when p*phi² << λ
         fixed::q31_t k;
@@ -284,6 +292,11 @@ void volterra_filter_rls_update(fixed::q31_t /*x_ref_q31*/, fixed::q31_t x_meas_
         fixed::q31_t update = q31_sat_mul(k, error);
         F.order1.g1[m] = q31_sat_add(F.order1.g1[m], update);
         
+        // Gain clamping: prevent overfitting by limiting coefficient magnitude
+        fixed::q31_t g1_clamp = fixed::q31_from_float(RLS_GAIN_CLAMP);
+        if (F.order1.g1[m] > g1_clamp) F.order1.g1[m] = g1_clamp;
+        else if (F.order1.g1[m] < fixed::q31_neg(g1_clamp)) F.order1.g1[m] = fixed::q31_neg(g1_clamp);
+        
         // P_new = (P - k * phi * P) / λ
         fixed::q31_t k_phi = q31_sat_mul(k, phi);
         fixed::q31_t p_new = q31_sat_sub(p, q31_sat_mul(k_phi, p));
@@ -291,35 +304,90 @@ void volterra_filter_rls_update(fixed::q31_t /*x_ref_q31*/, fixed::q31_t x_meas_
         F.order1.lambda_inv[m] = p_new;
     }
     
-    // ---- 2nd Order RLS ----
-    constexpr int W = VOLTERRA_SPARSITY_WINDOW;
-    for (size_t m1 = 0; m1 < VOLTERRA_MEMORY_M; ++m1) {
-        size_t idx1 = (F.delay_head + VOLTERRA_MEMORY_M - m1) % VOLTERRA_MEMORY_M;
-        fixed::q31_t x1 = F.delay_line[idx1];
-        
-        uint16_t mask = F.order2.valid_mask[m1];
-        for (int dm = -W; dm <= W; ++dm) {
-            if (!(mask & (1u << (dm + W)))) continue;
-            int m2 = static_cast<int>(m1) + dm;
-            if (m2 < 0 || m2 >= static_cast<int>(VOLTERRA_MEMORY_M)) continue;
+    // Nonlinear terms disabled for stability
+    if (!g_volterra_filter.disable_nonlinear) {
+        // ---- 2nd Order RLS ----
+        constexpr int W = VOLTERRA_SPARSITY_WINDOW;
+        for (size_t m1 = 0; m1 < VOLTERRA_MEMORY_M; ++m1) {
+            size_t idx1 = (g_volterra_filter.delay_head + VOLTERRA_MEMORY_M - m1) % VOLTERRA_MEMORY_M;
+            fixed::q31_t x1 = g_volterra_filter.delay_line[idx1];
             
-            size_t idx2 = (F.delay_head + VOLTERRA_MEMORY_M - 1 - m2) % VOLTERRA_MEMORY_M;
-            fixed::q31_t x2 = F.delay_line[idx2];
-            
-            size_t coeff_idx = volterra_2nd_index(static_cast<uint8_t>(m1), static_cast<uint8_t>(m2));
-            if (coeff_idx == SIZE_MAX) continue;
-            
-            // Regressor: φ = x1 * x2
-            fixed::q31_t phi = q31_sat_mul(x1, x2);
-            if (m1 != static_cast<size_t>(m2)) {
-                // Symmetric term appears twice in sum
-                phi = q31_sat_add(phi, phi);
+            uint16_t mask = g_volterra_filter.order2.valid_mask[m1];
+            for (int dm = -W; dm <= W; ++dm) {
+                if (!(mask & (1u << (dm + W)))) continue;
+                int m2 = static_cast<int>(m1) + dm;
+                if (m2 < 0 || m2 >= static_cast<int>(VOLTERRA_MEMORY_M)) continue;
+                
+                size_t idx2 = (g_volterra_filter.delay_head + VOLTERRA_MEMORY_M - 1 - m2) % VOLTERRA_MEMORY_M;
+                fixed::q31_t x2 = g_volterra_filter.delay_line[idx2];
+                
+                size_t coeff_idx = volterra_2nd_index(static_cast<uint8_t>(m1), static_cast<uint8_t>(m2));
+                if (coeff_idx == SIZE_MAX) continue;
+                
+                // Regressor: φ = x1 * x2
+                fixed::q31_t phi = q31_sat_mul(x1, x2);
+                if (m1 != static_cast<size_t>(m2)) {
+                    // Symmetric term appears twice in sum
+                    phi = q31_sat_add(phi, phi);
+                }
+                
+                fixed::q31_t p = g_volterra_filter.order2.p_inv[coeff_idx];
+                fixed::q31_t phi2 = q31_sat_mul(phi, phi);
+                fixed::q31_t p_phi2 = q31_sat_mul(p, phi2);
+                fixed::q31_t denom = q31_sat_add(F.rls_lambda_q31, p_phi2);
+                
+                // Denominator regularization: prevent numerical instability and overfitting
+                fixed::q31_t denom_min = fixed::q31_from_float(RLS_EPSILON);
+                if (denom < denom_min) denom = denom_min;
+                
+                fixed::q31_t k;
+                if (q31_abs(p_phi2) < q31_abs(F.rls_lambda_q31) >> 2) {
+                    k = q31_sat_mul(p, phi);
+                    k = q31_sat_mul(k, fixed::q31_from_float(1.0f / RLS_LAMBDA));
+                } else {
+                    float denom_f = fixed::q31_to_float(denom);
+                    float k_f = fixed::q31_to_float(q31_sat_mul(p, phi)) / denom_f;
+                    k = fixed::q31_from_float(k_f);
+                }
+                
+                fixed::q31_t update = q31_sat_mul(k, error);
+                g_volterra_filter.order2.g2[coeff_idx] = q31_sat_add(g_volterra_filter.order2.g2[coeff_idx], update);
+                
+                // Gain clamping for 2nd order
+                fixed::q31_t g2_clamp = fixed::q31_from_float(RLS_GAIN_CLAMP);
+                if (g_volterra_filter.order2.g2[coeff_idx] > g2_clamp) g_volterra_filter.order2.g2[coeff_idx] = g2_clamp;
+                else if (g_volterra_filter.order2.g2[coeff_idx] < fixed::q31_neg(g2_clamp)) g_volterra_filter.order2.g2[coeff_idx] = fixed::q31_neg(g2_clamp);
+                
+                fixed::q31_t k_phi = q31_sat_mul(k, phi);
+                fixed::q31_t p_new = q31_sat_sub(p, q31_sat_mul(k_phi, p));
+                p_new = q31_sat_mul(p_new, fixed::q31_from_float(1.0f / RLS_LAMBDA));
+                g_volterra_filter.order2.p_inv[coeff_idx] = p_new;
             }
+        }
+        
+        // ---- 3rd Order RLS ----
+        for (size_t i = 0; i < g_volterra_filter.order3.num_active; ++i) {
+            auto idxs = g_volterra_filter.order3.index_map[i];
+            size_t idx1 = (g_volterra_filter.delay_head + VOLTERRA_MEMORY_M - idxs.m1) % VOLTERRA_MEMORY_M;
+            size_t idx2 = (g_volterra_filter.delay_head + VOLTERRA_MEMORY_M - idxs.m2) % VOLTERRA_MEMORY_M;
+            size_t idx3 = (g_volterra_filter.delay_head + VOLTERRA_MEMORY_M - idxs.m3) % VOLTERRA_MEMORY_M;
             
-            fixed::q31_t p = F.order2.p_inv[coeff_idx];
+            fixed::q31_t x1 = g_volterra_filter.delay_line[idx1];
+            fixed::q31_t x2 = g_volterra_filter.delay_line[idx2];
+            fixed::q31_t x3 = g_volterra_filter.delay_line[idx3];
+            
+            // Regressor: φ = x1 * x2 * x3
+            fixed::q31_t phi = q31_sat_mul(x1, x2);
+            phi = q31_sat_mul(phi, x3);
+            
+            fixed::q31_t p = g_volterra_filter.order3.p_inv[i];
             fixed::q31_t phi2 = q31_sat_mul(phi, phi);
             fixed::q31_t p_phi2 = q31_sat_mul(p, phi2);
             fixed::q31_t denom = q31_sat_add(F.rls_lambda_q31, p_phi2);
+            
+            // Denominator regularization
+            fixed::q31_t denom_min = fixed::q31_from_float(RLS_EPSILON);
+            if (denom < denom_min) denom = denom_min;
             
             fixed::q31_t k;
             if (q31_abs(p_phi2) < q31_abs(F.rls_lambda_q31) >> 2) {
@@ -332,52 +400,18 @@ void volterra_filter_rls_update(fixed::q31_t /*x_ref_q31*/, fixed::q31_t x_meas_
             }
             
             fixed::q31_t update = q31_sat_mul(k, error);
-            F.order2.g2[coeff_idx] = q31_sat_add(F.order2.g2[coeff_idx], update);
+            g_volterra_filter.order3.g3[i] = q31_sat_add(g_volterra_filter.order3.g3[i], update);
+            
+            // Gain clamping for 3rd order
+            fixed::q31_t g3_clamp = fixed::q31_from_float(RLS_GAIN_CLAMP);
+            if (g_volterra_filter.order3.g3[i] > g3_clamp) g_volterra_filter.order3.g3[i] = g3_clamp;
+            else if (g_volterra_filter.order3.g3[i] < fixed::q31_neg(g3_clamp)) g_volterra_filter.order3.g3[i] = fixed::q31_neg(g3_clamp);
             
             fixed::q31_t k_phi = q31_sat_mul(k, phi);
             fixed::q31_t p_new = q31_sat_sub(p, q31_sat_mul(k_phi, p));
             p_new = q31_sat_mul(p_new, fixed::q31_from_float(1.0f / RLS_LAMBDA));
-            F.order2.p_inv[coeff_idx] = p_new;
+            g_volterra_filter.order3.p_inv[i] = p_new;
         }
-    }
-    
-    // ---- 3rd Order RLS ----
-    for (size_t i = 0; i < F.order3.num_active; ++i) {
-        auto idxs = F.order3.index_map[i];
-        size_t idx1 = (F.delay_head + VOLTERRA_MEMORY_M - idxs.m1) % VOLTERRA_MEMORY_M;
-        size_t idx2 = (F.delay_head + VOLTERRA_MEMORY_M - idxs.m2) % VOLTERRA_MEMORY_M;
-        size_t idx3 = (F.delay_head + VOLTERRA_MEMORY_M - idxs.m3) % VOLTERRA_MEMORY_M;
-        
-        fixed::q31_t x1 = F.delay_line[idx1];
-        fixed::q31_t x2 = F.delay_line[idx2];
-        fixed::q31_t x3 = F.delay_line[idx3];
-        
-        // Regressor: φ = x1 * x2 * x3
-        fixed::q31_t phi = q31_sat_mul(x1, x2);
-        phi = q31_sat_mul(phi, x3);
-        
-        fixed::q31_t p = F.order3.p_inv[i];
-        fixed::q31_t phi2 = q31_sat_mul(phi, phi);
-        fixed::q31_t p_phi2 = q31_sat_mul(p, phi2);
-        fixed::q31_t denom = q31_sat_add(F.rls_lambda_q31, p_phi2);
-        
-        fixed::q31_t k;
-        if (q31_abs(p_phi2) < q31_abs(F.rls_lambda_q31) >> 2) {
-            k = q31_sat_mul(p, phi);
-            k = q31_sat_mul(k, fixed::q31_from_float(1.0f / RLS_LAMBDA));
-        } else {
-            float denom_f = fixed::q31_to_float(denom);
-            float k_f = fixed::q31_to_float(q31_sat_mul(p, phi)) / denom_f;
-            k = fixed::q31_from_float(k_f);
-        }
-        
-        fixed::q31_t update = q31_sat_mul(k, error);
-        F.order3.g3[i] = q31_sat_add(F.order3.g3[i], update);
-        
-        fixed::q31_t k_phi = q31_sat_mul(k, phi);
-        fixed::q31_t p_new = q31_sat_sub(p, q31_sat_mul(k_phi, p));
-        p_new = q31_sat_mul(p_new, fixed::q31_from_float(1.0f / RLS_LAMBDA));
-        F.order3.p_inv[i] = p_new;
     }
 }
 

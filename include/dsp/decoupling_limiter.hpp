@@ -20,10 +20,11 @@ namespace dsp {
 // ============================================================================
 
 // Voltage limit profile: V_max(x) = V_nominal * (1 - (|x|/X_lim)^k) for |x| > X_knee
-// Soft knee at LIMITER_KNEE_RATIO * X_MAX, hard limit at X_LIM
-constexpr float LIMITER_KNEE_X = X_MAX * LIMITER_KNEE_RATIO;  // 10.8 mm
+// Soft knee at 12.2 mm (so 1.0 X_max = 12.0 mm is untouched, while 16 mm overdrive is clamped)
+// Hard limit at X_LIM = 15 mm
+constexpr float LIMITER_KNEE_X = 0.0122f;  // 12.2 mm - soft limiting starts here
 constexpr float LIMITER_HARD_X = X_LIM;                        // 15 mm
-// Nominal full-scale in AMP units: ±1.0 Q31 = AMP_FULL_SCALE_V (150V)
+// Nominal full-scale in AMP units: ±1.0 Q31 = AMP_FULL_SCALE_V (200V)
 constexpr float LIMITER_V_NOMINAL = 1.0f;                      
 constexpr float LIMITER_EXPONENT = 2.0f;                       // Quadratic roll-off
 

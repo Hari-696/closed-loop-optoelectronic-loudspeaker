@@ -65,6 +65,8 @@ constexpr size_t VOLTERRA_MEMORY_M = 32;           ///< Memory depth [samples] =
 constexpr size_t VOLTERRA_ORDER = 3;               ///< Maximum Volterra order (2nd + 3rd)
 constexpr float RLS_LAMBDA = 0.9995f;              ///< RLS forgetting factor (τ ≈ 2000 samples = 83 ms at 24 kHz update)
 constexpr float RLS_DELTA = 1.0f;                  ///< RLS initial inverse correlation (δ = 1.0, P₀ = 1/δ = 1.0)
+constexpr float RLS_EPSILON = 1e-4f;               ///< RLS denominator regularization floor (prevents numerical instability)
+constexpr float RLS_GAIN_CLAMP = 0.25f;            ///< Max |g2|, |g3| coefficient magnitude (prevents overfitting)
 constexpr size_t RLS_UPDATE_DECIMATION = 4;        ///< Update every 4th sample (24 kHz)
 constexpr int VOLTERRA_SPARSITY_WINDOW = 4;        ///< |m_i - m_j| ≤ 4 for 3rd-order terms
 // ~1,200 active 3rd-order coefficients after sparsification
@@ -81,8 +83,8 @@ constexpr float OBSERVER_POLE_MAX_HZ = 540.0f;     ///< Observer pole max [Hz]
 // ============================================================================
 // Closed-loop poles at 150-180 Hz (well above 108 Hz mechanical resonance)
 // for >15 dB loop gain at 100 Hz to suppress open-loop THD/IMD by 10-20 dB.
-constexpr float CL_POLE_MIN_HZ = 150.0f;           ///< Closed-loop pole min [Hz]
-constexpr float CL_POLE_MAX_HZ = 180.0f;           ///< Closed-loop pole max [Hz]
+constexpr float CL_POLE_MIN_HZ = 180.0f;           ///< Closed-loop pole min [Hz]
+constexpr float CL_POLE_MAX_HZ = 220.0f;           ///< Closed-loop pole max [Hz]
 constexpr float CL_DAMPING_ZETA = 0.707f;          ///< Closed-loop damping ratio ζ = 0.707
 
 // ============================================================================
@@ -129,7 +131,7 @@ constexpr float VOLTS_PER_LSB = ADC_VREF / ADC_FULL_SCALE;
 // ADC/DAC: ±1.0 Q31 = ±5 V (ADC/DAC range)
 // Amplifier: ±1.0 Q31 = ±150 V (voice coil drive)
 constexpr float VOLTAGE_FULL_SCALE_V = 5.0f;       ///< ADC/DAC full-scale [V]
-constexpr float AMP_FULL_SCALE_V = 150.0f;         ///< Amplifier/voice coil full-scale [V]
+constexpr float AMP_FULL_SCALE_V = 200.0f;         ///< Amplifier/voice coil full-scale [V] (150V clips at 1.0 X_max, 200V gives headroom)
 
 // ============================================================================
 // Displacement Scaling (maps ±X_LIM to ±5V ADC range)
