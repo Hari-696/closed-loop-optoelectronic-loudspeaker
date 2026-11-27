@@ -267,7 +267,7 @@ bool luenberger_observer_init(float observer_pole_hz) noexcept {
     // L.y has units m/s per m = 1/s
     // In Q31: L.x_q31 = L.x (dimensionless in Q31 update), L.y scaled by X_LIM/10
     g_observer_matrices.l0 = to_q31(L.x);
-    g_observer_matrices.l1 = to_q31(L.y * X_LIM_OVER_VEL);  // L.y * (X_LIM/10)
+    g_observer_matrices.l1 = to_q31(L.y * X_LIM_OVER_VEL);  // L.y * (X_LIM/10) to convert X_LIM units to 10 m/s units
     
     // (A_d - L*C_d) matrix scaling
     // C_d = [1, 0], so L*C_d = [L.x, 0; L.y, 0]

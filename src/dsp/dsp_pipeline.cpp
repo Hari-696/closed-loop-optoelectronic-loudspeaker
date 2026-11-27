@@ -80,6 +80,10 @@ void dsp_pipeline_reset() noexcept {
     cubic_spline_lut_init_from_model(D_0, R_F, PHOTODIODE_RESPONSIVITY, 1.0f);  // Re-init LUT
     luenberger_observer_reset();
     volterra_filter_reset();
+    // Also clear Volterra coefficients (they persist across reset)
+    g_volterra_filter.order1.g1.fill(0);
+    g_volterra_filter.order2.g2.fill(0);
+    g_volterra_filter.order3.g3.fill(0);
     decoupling_limiter_reset();
     lsp_estimator_reset();
     telemetry::spsc_ring_buffer_reset();
@@ -106,9 +110,9 @@ DSP_INLINE fixed::q31_t adc_to_q31_current(int32_t adc_code) noexcept {
 }
 
 DSP_INLINE int32_t q31_voltage_to_dac(fixed::q31_t v_q31) noexcept {
-    // ±1.0 Q31 (full scale = ±5 V) → 24-bit signed DAC code
-    // ±1.0 Q31 = full scale = ±8388607 codes
-    float v = fixed::q31_to_float(v_q31);  // ±1.0 = full scale
+    // ±1.0 Q31 (full scale = ±150 V, amplifier range) → 24-bit signed DAC code
+    // ±1.0 Q31 = full scale = ±8388607 codes = ±150 V at amplifier output
+    float v = fixed::q31_to_float(v_q31);  // ±1.0 = full scale (±150 V)
     int32_t code = static_cast<int32_t>(v * 8388608.0f);
     if (code > 8388607) code = 8388607;
     if (code < -8388608) code = -8388608;
@@ -218,26 +222,26 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     fixed::q31_t x_abs = fixed::q31_abs(x_meas_q31);
     fixed::q31_t v_max;
     if (x_abs <= fixed::q31_from_float(LIMITER_KNEE_X / X_LIM)) {
-        v_max = fixed::q31_from_float(LIMITER_V_NOMINAL);
+        v_max = 2147483647;  // 1.0 Q31 = 150V AMP
     } else if (x_abs >= fixed::q31_from_float(1.0f)) {
         v_max = 0;
     } else {
         fixed::q31_t pos = fixed::q31_sat_sub(x_abs, fixed::q31_from_float(LIMITER_KNEE_X / X_LIM));
         fixed::q31_t norm = fixed::q31_sat_mul(pos, fixed::q31_from_float(1.0f / (1.0f - LIMITER_KNEE_RATIO)));
         fixed::q31_t norm2 = fixed::q31_sat_mul(norm, norm);
-        fixed::q31_t one = fixed::q31_from_float(1.0f);
+        fixed::q31_t one = 2147483647;  // 1.0 Q31
         fixed::q31_t factor = fixed::q31_sat_sub(one, norm2);
-        v_max = fixed::q31_sat_mul(fixed::q31_from_float(LIMITER_V_NOMINAL), factor);
+        v_max = fixed::q31_sat_mul(2147483647, factor);  // LIMITER_V_NOMINAL = 1.0 Q31
     }
     
     // Sum feedforward and feedback (AMP units)
     fixed::q31_t u_sum = fixed::q31_sat_add(u_ff_q31, u_fb_q31);
     
-    // Symmetric saturation in AMP units
+    // Symmetric saturation in AMP units (use >= / <= to clamp at boundary)
     fixed::q31_t u_lim_amp_q31;
-    if (u_sum > v_max) {
+    if (u_sum >= v_max) {
         u_lim_amp_q31 = v_max;
-    } else if (u_sum < fixed::q31_neg(v_max)) {
+    } else if (u_sum <= fixed::q31_neg(v_max)) {
         u_lim_amp_q31 = fixed::q31_neg(v_max);
     } else {
         u_lim_amp_q31 = u_sum;
@@ -247,8 +251,8 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     fixed::q31_t x_abs_rls = fixed::q31_abs(x_meas_q31);
     bool rls_freeze = (x_abs_rls > fixed::q31_from_float(LIMITER_KNEE_X / X_LIM));
     
-    // Convert limited voltage to ADC units for DAC output: AMP → ADC = ×(5/150) = ×1/30
-    fixed::q31_t u_lim_adc_q31 = fixed::q31_sat_mul(u_lim_amp_q31, fixed::q31_from_float(VOLTAGE_FULL_SCALE_V / AMP_FULL_SCALE_V));
+    // u_lim_amp_q31 is already in AMP units (±1.0 = ±150V), pass directly to DAC
+    // DAC converter now expects AMP units
     
     // ================================================================
     // Stage 7: Error Signal (for monitoring)
@@ -283,8 +287,10 @@ void dsp_step(const AdcFrame* adc, DacFrame* dac) noexcept {
     }
     
     // ================================================================
-    // Stage 10: DAC Output
+    // Stage 10: DAC Output (convert AMP units to ADC units)
     // ================================================================
+    // Convert AMP units (±1.0 = ±150V) to ADC units (±1.0 = ±5V)
+    fixed::q31_t u_lim_adc_q31 = fixed::q31_sat_mul(u_lim_amp_q31, fixed::q31_from_float(VOLTAGE_FULL_SCALE_V / AMP_FULL_SCALE_V));
     int32_t dac_code = q31_voltage_to_dac(u_lim_adc_q31);
     
     // ================================================================
@@ -373,6 +379,64 @@ DSP_API int dsp_debug_mfb_direct_cabi(int32_t* u_fb_out) noexcept {
     return 0;
 }
 
+DSP_API int dsp_debug_get_state_cabi(int32_t* x_ref_out, int32_t* x_meas_out, int32_t* x_hat_out, int32_t* v_hat_out, int32_t* u_ff_out, int32_t* u_fb_out, int32_t* u_lim_out) noexcept {
+    if (!x_ref_out || !x_meas_out || !x_hat_out || !v_hat_out || !u_ff_out || !u_fb_out || !u_lim_out) return -1;
+    using namespace dsp;
+    using namespace fixed;
+    *x_ref_out = g_dsp_frame.x_ref;
+    *x_meas_out = g_dsp_frame.x_meas;
+    *x_hat_out = g_dsp_frame.x_hat;
+    *v_hat_out = g_dsp_frame.v_hat;
+    *u_ff_out = g_dsp_frame.u_ff;
+    *u_fb_out = g_dsp_frame.u_fb;
+    *u_lim_out = g_dsp_frame.u_lim;
+    return 0;
+}
+
+DSP_API int dsp_debug_get_limiter_state_cabi(int32_t* u_ff_out, int32_t* u_fb_out, int32_t* u_sum_out, int32_t* v_max_out, int32_t* u_lim_out) noexcept {
+    if (!u_ff_out || !u_fb_out || !u_sum_out || !v_max_out || !u_lim_out) return -1;
+    using namespace dsp;
+    using namespace fixed;
+    // Debug: directly use the integer constant for 1.0 Q31
+    fixed::q31_t v_max = 2147483647;  // 1.0 Q31 = 2^31 - 1
+    fixed::q31_t u_sum = fixed::q31_sat_add(g_dsp_frame.u_ff, g_dsp_frame.u_fb);
+    fixed::q31_t u_lim;
+    if (u_sum >= v_max) {
+        u_lim = v_max;
+    } else if (u_sum <= fixed::q31_neg(v_max)) {
+        u_lim = fixed::q31_neg(v_max);
+    } else {
+        u_lim = u_sum;
+    }
+    *u_ff_out = g_dsp_frame.u_ff;
+    *u_fb_out = g_dsp_frame.u_fb;
+    *u_sum_out = u_sum;
+    *v_max_out = v_max;
+    *u_lim_out = u_lim;
+    return 0;
+}
+
+DSP_API int dsp_debug_get_observer_matrices_cabi(
+    int32_t* a_l00, int32_t* a_l01, int32_t* a_l10, int32_t* a_l11,
+    int32_t* l0, int32_t* l1, int32_t* b0, int32_t* b1,
+    int32_t* initialized
+) noexcept {
+    if (!a_l00 || !a_l01 || !a_l10 || !a_l11 || !l0 || !l1 || !b0 || !b1 || !initialized) return -1;
+    using namespace dsp;
+    using namespace fixed;
+    const auto& M = g_observer_matrices;
+    *a_l00 = M.a_l00;
+    *a_l01 = M.a_l01;
+    *a_l10 = M.a_l10;
+    *a_l11 = M.a_l11;
+    *l0 = M.l0;
+    *l1 = M.l1;
+    *b0 = M.b0;
+    *b1 = M.b1;
+    *initialized = g_observer_state.initialized ? 1 : 0;
+    return 0;
+}
+
 DSP_API int dsp_debug_get_mfb_ref_cabi(int32_t* x_ref_out) noexcept {
     if (!x_ref_out) return -1;
     *x_ref_out = dsp::dsp_pipeline_get_reference_xmax();
@@ -455,20 +519,18 @@ DSP_API int dsp_debug_full_step_cabi(int32_t adc_disp, int32_t /*adc_curr*/, int
     // Sum feedforward and feedback (AMP units)
     fixed::q31_t u_sum = fixed::q31_sat_add(u_ff_q31, u_fb_q31);
     
-    // Symmetric saturation in AMP units
+    // Symmetric saturation in AMP units (use >= / <= to clamp at boundary)
     fixed::q31_t u_lim_amp_q31;
-    if (u_sum > v_max) {
+    if (u_sum >= v_max) {
         u_lim_amp_q31 = v_max;
-    } else if (u_sum < fixed::q31_neg(v_max)) {
+    } else if (u_sum <= fixed::q31_neg(v_max)) {
         u_lim_amp_q31 = fixed::q31_neg(v_max);
     } else {
         u_lim_amp_q31 = u_sum;
     }
     
-    // Scale to ADC units for DAC
+    // Convert AMP units (±1.0 = ±150V) to ADC units (±1.0 = ±5V) for DAC
     fixed::q31_t u_lim_adc_q31 = fixed::q31_sat_mul(u_lim_amp_q31, fixed::q31_from_float(VOLTAGE_FULL_SCALE_V / AMP_FULL_SCALE_V));
-    
-    // Stage 7: DAC
     int32_t dac_code = q31_voltage_to_dac(u_lim_adc_q31);
     
     // Return values (including x_ref for debug)

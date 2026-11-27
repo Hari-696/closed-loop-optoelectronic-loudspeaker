@@ -271,28 +271,39 @@ public:
     
     // Convert accumulated 128-bit value to q31 (shift right 31 with rounding)
     DSP_INLINE q31_t to_q31() noexcept {
-        // Combined value is (acc_hi_ << 64) | acc_lo_
-        // Shift right 31 bits with rounding: result = (combined + 2^30) >> 31
+        // Combined value is signed 128-bit: (hi_ << 64) | lo_ in two's complement
+        // Shift right 31 with rounding: (value + 2^30) >> 31
         
-        // Extract bits for shift-right-31:
-        // Low 31 bits of acc_lo_ are the fractional part
-        // Bit 30 of acc_lo_ is the rounding bit
-        // Bits 31-63 of acc_lo_ become bits 0-32 of result
-        // acc_hi_ shifted left 33 bits contributes to upper bits
-        
-        uint64_t rounding_bit = (acc_lo_ >> 30) & 1;
-        int64_t result = static_cast<int64_t>(acc_lo_ >> 31);
-        result += (acc_hi_ << 33);
-        
-        // Add rounding
-        if (rounding_bit) {
-            result += 1;
+        if (acc_hi_ >= 0) {
+            // Positive: value = (hi_ << 64) + lo_
+            // Shift right 31 with rounding: ((hi_ << 64) + lo_ + 2^30) >> 31
+            // = (hi_ << 33) + ((lo_ + 2^30) >> 31)
+            uint64_t lo_rounded = acc_lo_ + (1ULL << 30);
+            int64_t carry = (acc_lo_ > lo_rounded) ? 1 : 0;
+            int64_t result = (acc_hi_ << 33) + static_cast<int64_t>(lo_rounded >> 31) + carry;
+            
+            if (result > 2147483647LL) return 2147483647;
+            return static_cast<q31_t>(result);
+        } else {
+            // Negative: two's complement negation
+            // Magnitude = -(hi_ << 64 + lo_) = (~hi_ << 64) + (~lo_ + 1)
+            uint64_t lo_mag = ~acc_lo_ + 1;
+            int64_t hi_mag = ~acc_hi_;
+            if (acc_lo_ == 0) hi_mag += 1;
+            
+            // Now hi_mag:lo_mag is positive magnitude
+            // Shift right 31 with rounding: (hi_mag << 33) + ((lo_mag + 2^30) >> 31)
+            uint64_t lo_mag_rounded = lo_mag + (1ULL << 30);
+            int64_t carry = (lo_mag > lo_mag_rounded) ? 1 : 0;
+            int64_t hi_mag_scaled = (hi_mag << 33) + static_cast<int64_t>(lo_mag >> 31);
+            int64_t result = hi_mag_scaled + carry;
+            
+            // Result is positive magnitude, negate it
+            int64_t result_neg = -result;
+            
+            if (result_neg < -2147483648LL) return -2147483648;
+            return static_cast<q31_t>(result_neg);
         }
-        
-        // Saturate to q31 range
-        if (result > 2147483647LL) return 2147483647;
-        if (result < -2147483648LL) return -2147483648;
-        return static_cast<q31_t>(result);
     }
     
     DSP_INLINE void reset() noexcept { acc_hi_ = 0; acc_lo_ = 0; }
