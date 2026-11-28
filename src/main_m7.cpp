@@ -4,6 +4,9 @@
  * 
  * Initializes DSP pipeline, runs 1000 deterministic dsp_step() iterations,
  * prints min/avg/max cycle counts (total and per-stage) over USART1.
+ * 
+ * Does NOT block on RCC/PLL ready bits - Renode doesn't model them.
+ * Enables USART1 directly and prints cycle report.
  */
 
 #include "dsp/dsp_pipeline.hpp"
@@ -13,10 +16,16 @@
 
 /* USART1 registers (STM32H743) */
 #define USART1_BASE         0x40011000
+#define USART1_CR1          (*reinterpret_cast<volatile uint32_t*>(USART1_BASE + 0x00))
+#define USART1_CR2          (*reinterpret_cast<volatile uint32_t*>(USART1_BASE + 0x04))
+#define USART1_CR3          (*reinterpret_cast<volatile uint32_t*>(USART1_BASE + 0x08))
+#define USART1_BRR          (*reinterpret_cast<volatile uint32_t*>(USART1_BASE + 0x0C))
 #define USART1_ISR          (*reinterpret_cast<volatile uint32_t*>(USART1_BASE + 0x1C))
 #define USART1_TDR          (*reinterpret_cast<volatile uint32_t*>(USART1_BASE + 0x28))
 #define USART1_ISR_TXE      (1 << 7)   /* Transmit data register empty */
 #define USART1_ISR_TC       (1 << 6)   /* Transmission complete */
+#define USART1_CR1_UE       (1 << 0)   /* USART enable */
+#define USART1_CR1_TE       (1 << 3)   /* Transmitter enable */
 
 /* RCC registers for enabling USART1 and GPIOA */
 #define RCC_BASE            0x58024400
@@ -86,17 +95,11 @@ static void usart1_init() {
     
     /* USART1 configuration: 115200 baud, 8N1 */
     /* BRR = Fclk / Baud = 480,000,000 / 115200 = 4166.67 ≈ 4167 */
-    /* USARTDIV = 4167 = 0x1047 */
-    volatile uint32_t* USART1_BRR = reinterpret_cast<volatile uint32_t*>(USART1_BASE + 0x0C);
-    volatile uint32_t* USART1_CR1 = reinterpret_cast<volatile uint32_t*>(USART1_BASE + 0x00);
-    volatile uint32_t* USART1_CR2 = reinterpret_cast<volatile uint32_t*>(USART1_BASE + 0x04);
-    volatile uint32_t* USART1_CR3 = reinterpret_cast<volatile uint32_t*>(USART1_BASE + 0x08);
-    
-    *USART1_CR1 = 0;           /* Disable USART */
-    *USART1_BRR = 4167;        /* 115200 baud @ 480 MHz */
-    *USART1_CR2 = 0;           /* 1 stop bit */
-    *USART1_CR3 = 0;           /* No flow control */
-    *USART1_CR1 = (1 << 3) | (1 << 2) | (1 << 0);  /* TE | RE | UE */
+    USART1_CR1 = 0;           /* Disable USART */
+    USART1_BRR = 4167;        /* 115200 baud @ 480 MHz */
+    USART1_CR2 = 0;           /* 1 stop bit */
+    USART1_CR3 = 0;           /* No flow control */
+    USART1_CR1 = USART1_CR1_UE | USART1_CR1_TE;  /* UE | TE */
 }
 
 /* Send single character over USART1 */
@@ -167,11 +170,8 @@ int main() {
     adc.timestamp_ns = 0;
     dac.timestamp_ns = 0;
     
-    /* Test reference: 1.0 X_max sine at 30 Hz (12 mm) */
-    /* For simplicity, use fixed reference - real system would use LUT */
     for (int iter = 0; iter < NUM_ITERATIONS; ++iter) {
         /* Simulated ADC input (placeholder - real system reads from ADC) */
-        /* Using zero displacement for simplicity - controller will drive to zero */
         adc.displacement_adc = 0;
         adc.current_adc = 0;
         adc.voltage_adc = 0;
@@ -188,10 +188,6 @@ int main() {
         uint32_t total_cycles = cycles_after - cycles_before;
         
         g_stage_total.add(total_cycles);
-        
-        /* Extract per-stage timing from telemetry (if available) */
-        /* For now, we accumulate total - detailed per-stage would need 
-           instrumented DSP pipeline */
         
         /* Print progress every 100 iterations */
         if ((iter % 100) == 0) {
@@ -213,9 +209,9 @@ int main() {
     
     usart1_puts("\r\n=== Test Complete ===\r\n");
     
-    /* Infinite loop */
+    /* Clean idle loop - no blocking on unmodeled hardware */
     while (1) {
-        /* Could add watchdog kick here */
+        __asm__ volatile ("wfi");
     }
     
     return 0;

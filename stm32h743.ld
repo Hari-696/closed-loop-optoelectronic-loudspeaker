@@ -1,23 +1,34 @@
 /*
  * Linker Script for STM32H743 (2 MB Flash, 512 KB AXI SRAM, DTCM/ITCM)
  * Target: ARM Cortex-M7 @ 480 MHz
+ * 
+ * Memory layout:
+ *   FLASH:     0x08000000 - 0x08200000 (2 MB)   - .text, .rodata, .isr_vector
+ *   ITCM_RAM:  0x00000000 - 0x00010000 (64 KB)  - Critical code (optional)
+ *   DTCM_RAM:  0x20000000 - 0x20020000 (128 KB) - Hot data / stack (optional)
+ *   RAM_D1:    0x24000000 - 0x24080000 (512 KB) - .data, .bss, heap, MAIN STACK
+ *   RAM_D2:    0x30000000 - 0x30048000 (288 KB) - Peripheral buffers
+ *   RAM_D3:    0x38000000 - 0x38010000 (64 KB)  - Backup domain
  */
 
 ENTRY(Reset_Handler)
 
 MEMORY
 {
-    FLASH   (rx) : ORIGIN = 0x08000000, LENGTH = 2048K   /* 2 MB Flash */
-    RAM_D1  (rwx): ORIGIN = 0x24000000, LENGTH = 512K    /* 512 KB AXI SRAM (D1 domain) */
-    RAM_D2  (rwx): ORIGIN = 0x30000000, LENGTH = 288K    /* 288 KB SRAM1+2+3 (D2 domain) */
-    RAM_D3  (rwx): ORIGIN = 0x38000000, LENGTH = 64K     /* 64 KB SRAM4 (D3 domain) */
-    ITCM_RAM (rwx): ORIGIN = 0x00000000, LENGTH = 64K    /* 64 KB ITCM (instruction tightly coupled) */
-    DTCM_RAM (rwx): ORIGIN = 0x20000000, LENGTH = 128K   /* 128 KB DTCM (data tightly coupled) */
+    FLASH     (rx) : ORIGIN = 0x08000000, LENGTH = 2048K    /* 2 MB Flash */
+    RAM_D1    (rwx): ORIGIN = 0x24000000, LENGTH = 512K     /* 512 KB AXI SRAM (D1) - MAIN RAM */
+    RAM_D2    (rwx): ORIGIN = 0x30000000, LENGTH = 288K     /* 288 KB SRAM1+2+3 (D2) */
+    RAM_D3    (rwx): ORIGIN = 0x38000000, LENGTH = 64K      /* 64 KB SRAM4 (D3) */
+    ITCM_RAM  (rwx): ORIGIN = 0x00000000, LENGTH = 64K      /* 64 KB ITCM */
+    DTCM_RAM  (rwx): ORIGIN = 0x20000000, LENGTH = 128K     /* 128 KB DTCM */
 }
 
-/* Stack/heap configuration */
-_stack_size = 16K;
-_heap_size = 0;  /* No heap - zero malloc/free */
+/* Stack configuration - place stack at top of RAM_D1 (AXI SRAM) */
+_stack_size = 32K;           /* 32 KB stack */
+_heap_size = 0;              /* No heap - zero malloc/free */
+
+/* Stack top = end of RAM_D1 */
+PROVIDE(_estack = ORIGIN(RAM_D1) + LENGTH(RAM_D1));  /* 0x24080000 */
 
 /* Section definitions */
 SECTIONS
@@ -95,18 +106,17 @@ SECTIONS
         . = ALIGN(4);
     } >FLASH
 
-    /* Data initialization - LMA in FLASH, VMA in RAM_D1 */
+    /* Data initialization - LMA in FLASH, VMA in RAM_D1 (AXI SRAM) */
     .data :
     {
         . = ALIGN(4);
         _sdata = .;
         *(.data*)
-        *(.bss*)
         . = ALIGN(4);
         _edata = .;
     } >RAM_D1 AT>FLASH
 
-    /* BSS section in RAM_D1 */
+    /* BSS section in RAM_D1 (AXI SRAM) */
     .bss :
     {
         . = ALIGN(4);
@@ -117,7 +127,7 @@ SECTIONS
         _ebss = .;
     } >RAM_D1
 
-    /* Stack in DTCM for fastest access (no heap) */
+    /* Stack in RAM_D1 (AXI SRAM) - grows down from _estack */
     .stack_dtcmsram (NOLOAD) :
     {
         . = ALIGN(8);
@@ -125,7 +135,7 @@ SECTIONS
         . += _stack_size;
         . = ALIGN(8);
         _stack_top = .;
-    } >DTCM_RAM
+    } >RAM_D1
 
     /* Heap in RAM_D1 - zero size as requested */
     .heap (NOLOAD) :
@@ -153,7 +163,7 @@ PROVIDE(_sdata = ADDR(.data));
 PROVIDE(_edata = ADDR(.data) + SIZEOF(.data));
 PROVIDE(_sbss = ADDR(.bss));
 PROVIDE(_ebss = ADDR(.bss) + SIZEOF(.bss));
-PROVIDE(_stack_top = _stack_top);
+PROVIDE(_stack_top = _estack);
 PROVIDE(_stack_bottom = _stack_bottom);
 PROVIDE(_heap_top = _heap_top);
 PROVIDE(_heap_bottom = _heap_bottom);
