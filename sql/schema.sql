@@ -1,47 +1,48 @@
 -- Closed-Loop Optoelectronic Loudspeaker System
--- PostgreSQL Schema for Telemetry and LSP Storage
--- Compatible with AES-style telemetry and GIN-indexed JSONB
+-- PostgreSQL 16 Schema for Batched JSONB Telemetry and LSP Storage
+-- Compatible with standard PostgreSQL 16 (no TimescaleDB extension required)
+-- Batch-packed: 128 samples per row = 750 rows/s @ 96 kHz
 
 -- ============================================================================
 -- Extensions
 -- ============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "btree_gin";
 
 -- ============================================================================
--- driver_telemetry: Real-time per-sample telemetry (96 kHz)
+-- driver_telemetry_batch: Batched telemetry (128 samples per row = 750 rows/s @ 96 kHz)
 -- ============================================================================
 
-CREATE TABLE driver_telemetry (
-    id BIGSERIAL PRIMARY KEY,
-    driver_uid UUID NOT NULL,
-    ts TIMESTAMPTZ NOT NULL DEFAULT now(),
-    sample_rate INTEGER NOT NULL,
-    payload JSONB NOT NULL,
-    seq BIGINT NOT NULL
+CREATE TABLE driver_telemetry_batch (
+    id              BIGSERIAL,
+    driver_uid      UUID        NOT NULL,
+    ts_start        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sample_period_ns INTEGER    NOT NULL DEFAULT 10417,  -- 96 kHz = 10.417 µs = 10417 ns
+    sample_count    SMALLINT    NOT NULL DEFAULT 128,
+    payload         JSONB       NOT NULL,           -- array of 128 sample objects
+    bl_est_min      DOUBLE PRECISION,               -- min Bl_est in batch (populated by logger)
+    bl_est_max      DOUBLE PRECISION,               -- max Bl_est in batch (populated by logger)
+    kms_est_min     DOUBLE PRECISION,               -- min K_ms_est in batch
+    kms_est_max     DOUBLE PRECISION,               -- max K_ms_est in batch
+    lim_active_count SMALLINT,                      -- count of limiter_active=true in batch
+    seq_start       BIGINT        NOT NULL          -- sequence number of first sample in batch
 );
 
--- Primary index for time-series queries
-CREATE INDEX idx_telemetry_driver_ts ON driver_telemetry (driver_uid, ts DESC);
+-- Primary key for time-series partitioning
+ALTER TABLE driver_telemetry_batch ADD PRIMARY KEY (driver_uid, ts_start);
 
--- GIN index on full JSONB payload for flexible querying
-CREATE INDEX idx_telemetry_payload_gin ON driver_telemetry USING GIN (payload);
+-- Composite index for driver + time-range queries
+CREATE INDEX idx_telemetry_driver_ts ON driver_telemetry_batch (driver_uid, ts_start DESC);
 
--- Partial GIN index on Bl_est for fast force-factor queries
-CREATE INDEX idx_telemetry_payload_bl ON driver_telemetry USING GIN ((payload -> 'Bl_est'))
-WHERE payload ? 'Bl_est';
+-- B-tree indexes on per-batch min/max for range queries
+CREATE INDEX idx_telemetry_bl_min ON driver_telemetry_batch (bl_est_min) WHERE bl_est_min IS NOT NULL;
+CREATE INDEX idx_telemetry_bl_max ON driver_telemetry_batch (bl_est_max) WHERE bl_est_max IS NOT NULL;
+CREATE INDEX idx_telemetry_kms_min ON driver_telemetry_batch (kms_est_min) WHERE kms_est_min IS NOT NULL;
+CREATE INDEX idx_telemetry_kms_max ON driver_telemetry_batch (kms_est_max) WHERE kms_est_max IS NOT NULL;
+CREATE INDEX idx_telemetry_limiter_count ON driver_telemetry_batch (lim_active_count) WHERE lim_active_count > 0;
 
--- Partial GIN index on K_ms_est for stiffness queries
-CREATE INDEX idx_telemetry_payload_kms ON driver_telemetry USING GIN ((payload -> 'K_ms_est'))
-WHERE payload ? 'K_ms_est';
-
--- Partial GIN index on limiter_active for protection events
-CREATE INDEX idx_telemetry_limiter ON driver_telemetry USING GIN ((payload -> 'limiter_active'))
-WHERE (payload ->> 'limiter_active')::boolean = true;
-
--- Optional: Partition by time for high-volume deployments
--- CREATE TABLE driver_telemetry_y2026m01 PARTITION OF driver_telemetry
+-- Optional: Partition by time for high-volume deployments (native PostgreSQL partitioning)
+-- CREATE TABLE driver_telemetry_batch_y2026m01 PARTITION OF driver_telemetry_batch
 -- FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
 
 -- ============================================================================
@@ -57,6 +58,8 @@ CREATE TABLE lsp_curves (
     k_ms_npm DOUBLE PRECISION,
     l_e_mh DOUBLE PRECISION,
     r_e_ohm DOUBLE PRECISION,
+    phase_deg DOUBLE PRECISION,
+    freq_hz DOUBLE PRECISION,
     captured_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -119,37 +122,31 @@ CREATE INDEX idx_sweep_driver ON sweep_sessions (driver_uid, started_at DESC);
 -- Views for Common Queries
 -- ============================================================================
 
--- Latest telemetry per driver
-CREATE VIEW latest_telemetry AS
-SELECT DISTINCT ON (driver_uid) driver_uid, ts, payload, seq
-FROM driver_telemetry
-ORDER BY driver_uid, ts DESC;
+-- Latest telemetry batch per driver
+CREATE VIEW latest_telemetry_batch AS
+SELECT DISTINCT ON (driver_uid) driver_uid, ts_start, payload, seq_start
+FROM driver_telemetry_batch
+ORDER BY driver_uid, ts_start DESC;
 
--- Average THD/IMD per driver over last hour
-CREATE VIEW hourly_distortion AS
+-- Bl_est range detection per batch (uses bl_est_min/bl_est_max indexes)
+CREATE VIEW batch_bl_range AS
 SELECT 
     driver_uid,
-    date_trunc('hour', ts) AS hour,
-    AVG((payload->>'thd_pct')::float) AS avg_thd_pct,
-    AVG((payload->>'imd_pct')::float) AS avg_imd_pct,
-    MAX((payload->>'thd_pct')::float) AS max_thd_pct,
-    COUNT(*) AS sample_count
-FROM driver_telemetry
-WHERE ts >= now() - interval '24 hours'
-GROUP BY driver_uid, date_trunc('hour', ts);
+    ts_start,
+    bl_est_min,
+    bl_est_max,
+    (bl_est_max - bl_est_min) AS bl_range,
+    sample_count
+FROM driver_telemetry_batch
+WHERE bl_est_min IS NOT NULL AND bl_est_max IS NOT NULL
+ORDER BY driver_uid, ts_start DESC;
 
--- Bl(x) curve reconstruction from telemetry (median per bin)
-CREATE VIEW bl_curve_telemetry AS
-SELECT 
-    driver_uid,
-    round((payload->>'x_mm')::float / 0.5) * 0.5 AS x_bin_mm,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY (payload->>'Bl_est')::float) AS bl_median_tm,
-    COUNT(*) AS sample_count
-FROM driver_telemetry
-WHERE payload ? 'Bl_est'
-  AND ts >= now() - interval '1 hour'
-GROUP BY driver_uid, round((payload->>'x_mm')::float / 0.5) * 0.5
-ORDER BY driver_uid, x_bin_mm;
+-- Limiter events (batches with any limiter activation)
+CREATE VIEW limiter_events AS
+SELECT driver_uid, ts_start, lim_active_count, sample_count
+FROM driver_telemetry_batch
+WHERE lim_active_count > 0
+ORDER BY ts_start DESC;
 
 -- ============================================================================
 -- Helper Functions
@@ -177,8 +174,8 @@ $$;
 -- Grants (adjust for your deployment)
 -- ============================================================================
 
--- GRANT SELECT, INSERT ON driver_telemetry TO telemetry_writer;
--- GRANT SELECT ON driver_telemetry TO telemetry_reader;
+-- GRANT SELECT, INSERT ON driver_telemetry_batch TO telemetry_writer;
+-- GRANT SELECT ON driver_telemetry_batch TO telemetry_reader;
 -- GRANT SELECT, INSERT ON lsp_curves TO telemetry_writer;
 -- GRANT SELECT ON lsp_curves TO telemetry_reader;
 -- GRANT SELECT ON driver_metadata TO telemetry_reader;

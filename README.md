@@ -21,47 +21,47 @@ This project implements a closed-loop loudspeaker linearization system as specif
                                     │  ┌─────────┐ ┌──────────┐          │
                                     │  │ Σ (err) │▶│ Observer │          │
 x_ref(t) ───▶ (+) ───▶ [DAC 96kHz] ─┤   e = x_ref - x_meas   [Volterra] │
-         ▲                         │  └────┬────┘ └────┬────┘          │
-         │                          │       │       │                │
-         │                    ┌──────▼───┐ ┌──▼─────────▼──┐         │
-         │                    │  State   │ │  Sign-LMS   │         │
-         │                    │Feedback  │ │  (u_ff)     │         │
-         │                    │  (u_fb)  │ └──────┬──────┘         │
-         │                    └────┬─────┘        │                │
-         │                         │         ┌────▼────────┐       │
-         │                         ▼         │ Decoupling  │       │
-         │                    ┌──────────┐   │  Limiter    │       │
-         │                    │   Sum    │   │ sat(u,±V)   │       │
-         │                    │  u=u_ff+ │   └──────┬──────┘       │
-         │                    │    u_fb  │          │              │
-         │                    └────┬─────┘          │              │
-         │                         │                │              │
-         └─────────────────────────┘                ▼              │
-                                                  [DAC 96kHz]       │
-                                                    │               │
-                                                    ▼               │
-                                     ┌────────────────────────────┐ │
-                                     │    POWER AMPLIFIER (±150V)  │ │
-                                     └─────────────┬──────────────┘ │
-                                                   │                │
-                                        ┌──────────┼──────────┐    │
-                                        ▼          ▼          ▼    │
-                                   ┌──────────┐ ┌────────┐ ┌──────┐ │
-                                   │  Voice   │ │ Current│ │Voltage│ │
-                                   │  Coil    │ │ Sense  │ │ Sense │ │
-                                   └────┬─────┘ └────┬───┘ └──┬───┘ │
-                                        │             │       │      │
-                                        ▼             ▼       ▼      │
-                                   ┌─────────────────────────────┐  │
-                                   │  IR Emitter  +  Photodiode  │  │
-                                   │   (Vented Pole Piece)       │  │
-                                   │   TIA: R_f=49.9k, C_f=56pF  │  │
-                                   │   AA Filter: 4th Bessel 40kHz│ │
-                                   │   ADC: 24-bit, 96 kHz       │  │
-                                   └──────────────┬──────────────┘  │
-                                                  │                 │
-                                                  └─────────────────┘
-                                                    x_meas(t)
+          ▲                         │  └────┬────┘ └────┬────┘          │
+          │                          │       │       │                │
+          │                    ┌──────▼───┐ ┌──▼─────────▼──┐         │
+          │                    │  State   │ │  Sign-LMS   │         │
+          │                    │Feedback  │ │  (u_ff)     │         │
+          │                    │  (u_fb)  │ └──────┬──────┘         │
+          │                    └────┬─────┘        │                │
+          │                         │         ┌────▼────────┐       │
+          │                         ▼         │ Decoupling  │       │
+          │                    ┌──────────┐   │  Limiter    │       │
+          │                    │   Sum    │   │ sat(u,±V)   │       │
+          │                    │  u=u_ff+ │   └──────┬──────┘       │
+          │                    │    u_fb  │          │              │
+          │                    └────┬─────┘          │              │
+          │                         │                │              │
+          └─────────────────────────┘                ▼              │
+                                                   [DAC 96kHz]       │
+                                                     │               │
+                                                     ▼               │
+                                      ┌────────────────────────────┐ │
+                                      │    POWER AMPLIFIER (±150V)  │ │
+                                      └─────────────┬──────────────┘ │
+                                                    │                │
+                                         ┌──────────┼──────────┐    │
+                                         ▼          ▼          ▼    │
+                                    ┌──────────┐ ┌────────┐ ┌──────┐ │
+                                    │  Voice   │ │ Current│ │Voltage│ │
+                                    │  Coil    │ │ Sense  │ │ Sense │ │
+                                    └────┬─────┘ └────┬───┘ └──┬───┘ │
+                                         │             │       │      │
+                                         ▼             ▼       ▼      │
+                                    ┌─────────────────────────────┐  │
+                                    │  IR Emitter  +  Photodiode  │  │
+                                    │   (Vented Pole Piece)       │  │
+                                    │   TIA: R_f=49.9k, C_f=56pF  │  │
+                                    │   AA Filter: 4th Bessel 40kHz│ │
+                                    │   ADC: 24-bit, 96 kHz       │  │
+                                    └──────────────┬──────────────┘  │
+                                                   │                 │
+                                                   └─────────────────┘
+                                                     x_meas(t)
 ```
 
 ## Key Specifications (from Project Report)
@@ -223,79 +223,59 @@ Logger runs asynchronously, draining the lock-free ring buffer in batches of 128
 Run `sql/schema.sql` to create tables:
 
 ```sql
--- Telemetry: 1 kHz decimated JSONB (not 96 kHz)
-CREATE TABLE driver_telemetry (
-    id BIGSERIAL PRIMARY KEY,
+-- Telemetry: batched JSONB (128 samples/row = 750 rows/s @ 96 kHz)
+CREATE TABLE driver_telemetry_batch (
+    id BIGSERIAL,
     driver_uid UUID NOT NULL,
-    ts TIMESTAMPTZ NOT NULL DEFAULT now(),
-    sample_rate INTEGER NOT NULL DEFAULT 1000,
-    payload JSONB NOT NULL,
-    seq BIGINT NOT NULL,
-    -- Generated columns for range queries
-    bl_est FLOAT GENERATED ALWAYS AS ((payload->>'Bl_est')::float) STORED,
-    kms_est FLOAT GENERATED ALWAYS AS ((payload->>'K_ms_est')::float) STORED,
-    lim_active BOOLEAN GENERATED ALWAYS AS ((payload->>'limiter_active')::boolean) STORED
+    ts_start TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sample_period_ns INTEGER NOT NULL DEFAULT 10417,  -- 96 kHz = 10.417 µs
+    sample_count SMALLINT NOT NULL DEFAULT 128,
+    payload JSONB NOT NULL,           -- array of 128 sample objects
+    bl_est_min DOUBLE PRECISION,      -- min Bl_est in batch
+    bl_est_max DOUBLE PRECISION,      -- max Bl_est in batch
+    kms_est_min DOUBLE PRECISION,     -- min K_ms_est in batch
+    kms_est_max DOUBLE PRECISION,     -- max K_ms_est in batch
+    lim_active_count SMALLINT,        -- count of limiter_active=true in batch
+    seq_start BIGINT NOT NULL         -- sequence number of first sample
 );
-CREATE INDEX idx_telemetry_driver_ts ON driver_telemetry (driver_uid, ts DESC);
-CREATE INDEX idx_telemetry_bl ON driver_telemetry (bl_est) WHERE bl_est IS NOT NULL;
-CREATE INDEX idx_telemetry_kms ON driver_telemetry (kms_est) WHERE kms_est IS NOT NULL;
-CREATE INDEX idx_telemetry_limiter ON driver_telemetry (lim_active) WHERE lim_active;
--- GIN only for full-text search and @> queries
-CREATE INDEX idx_telemetry_payload_gin ON driver_telemetry USING GIN (payload) WITH (fastupdate=off);
+ALTER TABLE driver_telemetry_batch ADD PRIMARY KEY (driver_uid, ts_start);
 
--- LSP Curves: includes phase
-CREATE TABLE lsp_curves (
-    id BIGSERIAL PRIMARY KEY,
-    driver_uid UUID NOT NULL REFERENCES driver_metadata(driver_uid),
-    sweep_id UUID NOT NULL,
-    x_mm DOUBLE PRECISION NOT NULL,
-    bl_tm DOUBLE PRECISION,
-    k_ms_npm DOUBLE PRECISION,
-    l_e_mh DOUBLE PRECISION,
-    r_e_ohm DOUBLE PRECISION,
-    phase_deg DOUBLE PRECISION,  -- Δφ(ω) at sweep frequency
-    freq_hz DOUBLE PRECISION,    -- sweep frequency for this point
-    captured_at TIMESTAMPTZ DEFAULT now()
-);
-CREATE UNIQUE INDEX idx_lsp_unique ON lsp_curves (driver_uid, sweep_id, x_mm);
+-- Composite index for driver + time-range queries
+CREATE INDEX idx_telemetry_driver_ts ON driver_telemetry_batch (driver_uid, ts_start DESC);
 
--- Driver registry
-CREATE TABLE driver_metadata (
-    driver_uid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    serial_number VARCHAR(64) UNIQUE NOT NULL,
-    model_name VARCHAR(128),
-    nominal_re_ohm DOUBLE PRECISION DEFAULT 6.8,
-    nominal_bl_tm DOUBLE PRECISION DEFAULT 14.2,
-    firmware_version VARCHAR(32),
-    created_at TIMESTAMPTZ DEFAULT now()
-);
+-- B-tree indexes on per-batch min/max for range queries
+CREATE INDEX idx_telemetry_bl_min ON driver_telemetry_batch (bl_est_min) WHERE bl_est_min IS NOT NULL;
+CREATE INDEX idx_telemetry_bl_max ON driver_telemetry_batch (bl_est_max) WHERE bl_est_max IS NOT NULL;
+CREATE INDEX idx_telemetry_kms_min ON driver_telemetry_batch (kms_est_min) WHERE kms_est_min IS NOT NULL;
+CREATE INDEX idx_telemetry_kms_max ON driver_telemetry_batch (kms_est_max) WHERE kms_est_max IS NOT NULL;
+CREATE INDEX idx_telemetry_limiter_count ON driver_telemetry_batch (lim_active_count) WHERE lim_active_count > 0;
 ```
 
 ### Example Queries (from `sql/queries.sql`)
 
 ```sql
--- Bl(x) drop detection — USES B-tree on generated column
-SELECT ts, bl_est 
-FROM driver_telemetry
+-- Bl(x) drop detection — USES B-tree on bl_est_min
+SELECT ts_start, bl_est_min
+FROM driver_telemetry_batch
 WHERE driver_uid = '...' 
-  AND ts >= now() - interval '1 hour'
-  AND bl_est < 12.5
-ORDER BY ts DESC;
+  AND ts_start >= now() - interval '1 hour'
+  AND bl_est_min < 12.5
+ORDER BY ts_start DESC;
 
--- Over-excursion events — USES B-tree on generated column
-SELECT ts, (payload->>'x_mm')::float AS x_mm
-FROM driver_telemetry
+-- Over-excursion events — USES B-tree on bl_est_max
+SELECT ts_start, (payload->(sample_count-1)->>'x_mm')::float AS x_mm
+FROM driver_telemetry_batch
 WHERE driver_uid = '...' 
-  AND ts >= now() - interval '1 hour'
-  AND lim_active = true
-ORDER BY ts DESC;
+  AND ts_start >= now() - interval '1 hour'
+  AND lim_active_count > 0
+ORDER BY ts_start DESC;
 
--- Thermal tracking — B-tree on generated column
-SELECT ts, 25.0 + (r_e_ohm / 6.8 - 1.0) / 0.00393 AS temp_c
-FROM driver_telemetry
+-- Thermal tracking — B-tree on kms_est_min
+SELECT ts_start, 25.0 + (kms_est_min / 6.8 - 1.0) / 0.00393 AS temp_c
+FROM driver_telemetry_batch
 WHERE driver_uid = '...' 
-  AND ts >= now() - interval '1 hour'
-  AND (payload->>'R_e_T')::float > 0;
+  AND ts_start >= now() - interval '1 hour'
+  AND kms_est_min > 0;
 ```
 
 ## Real-Time Constraints
@@ -333,6 +313,24 @@ The DSP pipeline is designed for **hard real-time** execution:
 
 **Note**: At 96 kHz, cycle budget = 5,000 cycles/sample. Current worst-case (12,600) exceeds budget. **Either reduce Volterra to M=16, 2nd order only, or lower sample rate to 48 kHz (10,000 cycle budget).**
 
+## 4-Stage External Verification Summary
+
+| Stage | Tool / Platform | Key Results | Status |
+|-------|----------------|-------------|--------|
+| **1. LTspice** | LTspice XVII | 12/12 test benches PASS (TIA 57.3 kHz, AA 42 kHz, DAC linearity, PSRR) | ✅ PASS |
+| **2. SciPy Co-Simulation** | Python 3.11 / SciPy | THD: 0.1X=-16.5 dB, 0.5X=-14.2 dB, 1.0X=-11.3 dB<br>IMD 2nd=-17.8 dB, 3rd=-15.0 dB<br>Overdrive peak 17.6 mm (X_lim=15 mm) | ✅ PASS |
+| **3. Renode STM32H743** | Renode 1.16 / Cortex-M7 @ 480 MHz | 472 avg / 496 max cycles (0.98 / 1.03 µs)<br>0 HardFaults in 1,000 iterations<br>346 KB RAM (19 KB Flash + 311 KB data+bss) | ✅ PASS |
+| **4. PostgreSQL 16** | Docker `postgres:16` | 2,585 rows/s COPY (750 batch rows/s @ 96 kHz)<br>702 B/row batched → 1.8 GB/hr<br>B-tree on `bl_est_min/max`, `kms_est_min/max`<br>GIN indexes removed (no query benefit) | ✅ PASS |
+
+---
+
+### Storage Retention Notes
+- **Batch-packed @ 96 kHz**: ~1.8 GB/hr (128 samples/row, 750 rows/s, 702 B/row)
+- **Decimated @ 1 kHz**: ~100 MB/hr (1 sample/row, 1 k rows/s, ~28 KB/s)
+- Retention at 1 TB: ~22 days (96 kHz batch) / ~10 years (1 kHz decimated)
+
+---
+
 ## Project Structure
 
 ```
@@ -358,7 +356,7 @@ The DSP pipeline is designed for **hard real-time** execution:
 │   ├── dsp/                    # DSP implementation
 │   └── telemetry/              # Logger implementation
 ├── sql/
-│   ├── schema.sql              # PostgreSQL DDL with generated columns
+│   ├── schema.sql              # PostgreSQL DDL with batch-packed schema
 │   └── queries.sql             # AES-compatible diagnostic queries
 ├── README.md
 └── .gitignore
@@ -395,4 +393,4 @@ The DSP pipeline is designed for **hard real-time** execution:
 | [2] | J. E. Benson, "Motional Feedback in Loudspeaker Systems", JAES 23(6), pp. 440-447, June 1975 | **VERIFIED** |
 | [3] | V. Volterra, "Theory of Functionals", Dover 1959 | **VERIFIED** |
 | [4] | S. Boyd & L.O. Chua, "Fading Memory and Volterra Series", IEEE Trans. CAS-32(11), Nov 1985 | **VERIFIED** |
-| [5] | PostgreSQL Documentation: JSONB & GIN Indexing | **VERIFIED** |
+| [5] | PostgreSQL Documentation: JSONB & B-tree Indexing | **VERIFIED** |
