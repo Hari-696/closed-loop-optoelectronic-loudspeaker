@@ -2,332 +2,244 @@
 
 > **Real-time cyber-physical loudspeaker linearization with optoelectronic displacement sensing, hybrid MFB/Volterra control, and PostgreSQL JSONB telemetry.**
 
-## Overview
+## Project Overview & Signal-Flow Architecture
 
-This project implements a closed-loop loudspeaker linearization system as specified in the NIT Durgapur capstone project report. The system targets **10-20 dB THD/IMD reduction (simulated)** at high excursion (0.1-1.0 X_max) through:
+This project implements a closed-loop loudspeaker linearization system as specified in the NIT Durgapur ECE capstone project report. The system targets **10–20 dB THD/IMD reduction** at high excursion (0.1–1.0 X_max) through non-contact optoelectronic displacement sensing in a vented pole piece, hybrid state-feedback + adaptive feedforward control, and cooperative over-excursion protection.
 
-- **Non-contact optoelectronic displacement sensing** in vented pole piece (zero added moving mass)
-- **Sub-100 µs deterministic DSP pipeline** on ARM Cortex-M7 @ 480 MHz / 96 kHz (simulated)
-- **Hybrid control**: Luenberger observer + MFB state-feedback + adaptive inverse Volterra feedforward (Sign-LMS)
-- **Cooperative decoupling & over-excursion protection** preventing mechanical bottoming
-- **Real-time LSP extraction**: Bl(x), K_ms(x), L_e(x), R_e(T), Δφ(ω)
-- **Lock-free telemetry** → PostgreSQL JSONB with generated-column B-tree indexes
-
-## Architecture
+### Signal-Flow Block Diagram
 
 ```
-                                    ┌─────────────────────────────────────┐
-                                    │         DSP PIPELINE (96 kHz)       │
-                                    │  ┌─────────┐ ┌──────────┐          │
-                                    │  │ Σ (err) │▶│ Observer │          │
-x_ref(t) ───▶ (+) ───▶ [DAC 96kHz] ─┤   e = x_ref - x_meas   [Volterra] │
-          ▲                         │  └────┬────┘ └────┬────┘          │
-          │                          │       │       │                │
-          │                    ┌──────▼───┐ ┌──▼─────────▼──┐         │
-          │                    │  State   │ │  Sign-LMS   │         │
-          │                    │Feedback  │ │  (u_ff)     │         │
-          │                    │  (u_fb)  │ └──────┬──────┘         │
-          │                    └────┬─────┘        │                │
-          │                         │         ┌────▼────────┐       │
-          │                         ▼         │ Decoupling  │       │
-          │                    ┌──────────┐   │  Limiter    │       │
-          │                    │   Sum    │   │ sat(u,±V)   │       │
-          │                    │  u=u_ff+ │   └──────┬──────┘       │
-          │                    │    u_fb  │          │              │
-          │                    └────┬─────┘          │              │
-          │                         │                │              │
-          └─────────────────────────┘                ▼              │
-                                                   [DAC 96kHz]       │
-                                                     │               │
-                                                     ▼               │
-                                      ┌────────────────────────────┐ │
-                                      │    POWER AMPLIFIER (±150V)  │ │
-                                      └─────────────┬──────────────┘ │
-                                                    │                │
-                                         ┌──────────┼──────────┐    │
-                                         ▼          ▼          ▼    │
-                                    ┌──────────┐ ┌────────┐ ┌──────┐ │
-                                    │  Voice   │ │ Current│ │Voltage│ │
-                                    │  Coil    │ │ Sense  │ │ Sense │ │
-                                    └────┬─────┘ └────┬───┘ └──┬───┘ │
-                                         │             │       │      │
-                                         ▼             ▼       ▼      │
-                                    ┌─────────────────────────────┐  │
-                                    │  IR Emitter  +  Photodiode  │  │
-                                    │   (Vented Pole Piece)       │  │
-                                    │   TIA: R_f=49.9k, C_f=56pF  │  │
-                                    │   AA Filter: 4th Bessel 40kHz│ │
-                                    │   ADC: 24-bit, 96 kHz       │  │
-                                    └──────────────┬──────────────┘  │
-                                                   │                 │
-                                                   └─────────────────┘
-                                                     x_meas(t)
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                         REAL-TIME 96 kHz AUDIO/CONTROL PATH                          │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  x_ref(t) ───▶ (+) ───▶ [DAC 96kHz] ───▶ Class-D Amp (±150V) ───▶ Voice Coil       │
+│                ▲                         │                    │                     │
+│                │                         ▼                    ▼                     │
+│                │                    ┌────────────┐    ┌────────────┐               │
+│                │                    │  Current   │    │  Voltage   │               │
+│                │                    │   Sense    │    │   Sense    │               │
+│                │                    └─────┬──────┘    └─────┬──────┘               │
+│                │                          │                │                       │
+│                │                    ┌─────▼────────────────▼─────┐                  │
+│                │                    │  IR Emitter + Photodiode   │                  │
+│                │                    │  (Vented Pole Piece)       │                  │
+│                │                    │  TIA: R_f=49.9k, C_f=56pF  │                  │
+│                │                    │  f_-3dB = 57.32 kHz        │                  │
+│                │                    └──────────────┬─────────────┘                  │
+│                │                                   │                              │
+│                │                    ┌──────────────▼─────────────┐                  │
+│                │                    │ 6th-Order 22 kHz Elliptic  │                  │
+│                │                    │ Anti-Aliasing Filter       │                  │
+│                │                    │ 101.38 dB @ 48.48 kHz      │                  │
+│                │                    │  86.13 dB @ 96.89 kHz      │                  │
+│                │                    └──────────────┬─────────────┘                  │
+│                │                                   │                              │
+│                │                    ┌──────────────▼─────────────┐                  │
+│                │                    │ 24-bit SAR ADC @ 96 kHz    │                  │
+│                │                    └──────────────┬─────────────┘                  │
+│                │                                   │                              │
+│                │                    ┌──────────────▼──────────────────────────┐   │
+│                │                    │         C++17/20 DSP PIPELINE            │   │
+│                │                    │ ┌─────────────────────────────────────┐  │   │
+│                │                    │ │ CALIBRATED ANALYTIC OPTICAL INVERSE │  │   │
+│                │                    │ │ (Inverse-square linearization,      │  │   │
+│                │                    │ │  fixes negative-excursion knot      │  │   │
+│                │                    │ │  starvation & -1.0 V clipping)      │  │   │
+│                │                    │ └────────────────┬────────────────────┘  │   │
+│                │                    │                  │                      │   │
+│                │                    │ ┌────────────────▼─────────────────────┐ │   │
+│                │                    │ │ LUENBERGER OBSERVER                   │ │   │
+│                │                    │ │ (325–540 Hz poles, 3–5× f_s mech)     │ │   │
+│                │                    │ │ Velocity estimate from displacement  │ │   │
+│                │                    │ └────────────────┬────────────────────┘ │   │
+│                │                    │                  │                      │   │
+│                │                    │ ┌────────────────▼─────────────────────┐ │   │
+│                │                    │ │ STATE-SPACE MFB FEEDBACK              │ │   │
+│                │                    │ │ (10–30 Hz poles, ζ=0.707, Kp/Ki/Kd)   │ │   │
+│                │                    │ └────────────────┬────────────────────┘ │   │
+│                │                    │                  │                      │   │
+│                │                    │ ┌────────────────▼─────────────────────┐ │   │
+│                │                    │ │ SPARSE 2nd/3rd-ORDER VOLTERRA         │ │   │
+│                │                    │ │ PRE-DISTORTION (Sign-LMS, μ=0.01)     │ │   │
+│                │                    │ │ ~1,200 coeffs, M=32, 333 µs memory   │ │   │
+│                │                    │ └────────────────┬────────────────────┘ │   │
+│                │                    │                  │                      │   │
+│                │                    │ ┌────────────────▼─────────────────────┐ │   │
+│                │                    │ │ DIRECTIONAL OVER-EXCURSION LIMITER    │ │   │
+│                │                    │ │ (V_max(x) soft knee @ 12.7 mm,        │ │   │
+│                │                    │ │  full brake @ 15 mm, inward-only)    │ │   │
+│                │                    │ └────────────────┬────────────────────┘ │   │
+│                │                    │                  │                      │   │
+│                │                    │ └────────────────▼────────────────────┘ │   │
+│                │                    │       Sum: u = u_ff + u_fb (sat)        │   │
+│                │                    │ └─────────────────────────────────────┘  │   │
+│                │                    └──────────────────────────────────────────┘   │
+│                │                                   │                              │
+│                │                    ┌──────────────▼─────────────┐                  │
+│                │                    │ 24-bit DAC @ 96 kHz        │                  │
+│                │                    └──────────────┬─────────────┘                  │
+│                │                                   │                              │
+│                └───────────────────────────────────┘                              │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                      NON-BLOCKING TELEMETRY PATH                                     │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  DSP Pipeline ──▶ Lock-free SPSC Ring Buffer (4096×64B = 256 KB)                   │
+│        │                                                                           │
+│        ▼                                                                           │
+│  Batch Packing (128 samples/row) ──▶ async libpq COPY ──▶ PostgreSQL 16           │
+│        │                            (driver_telemetry_batch)                       │
+│        │                                                                           │
+│        ▼                                                                           │
+│  128 samples/row = 750 rows/s @ 96 kHz                                             │
+│  B-tree indexes: bl_est_min/max, kms_est_min/max, lim_active_count                │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Key Specifications (from Project Report)
+---
 
-| Parameter | Value | Status |
-|-----------|-------|--------|
-| Sampling Rate | 96 kHz (10.42 µs period) | Verified |
-| DSP Target | ARM Cortex-M7, 480 MHz | Verified |
-| Closed-loop Latency | **23.4 µs ISR / 27.4 µs end-to-end** (simulated) | Recalculated |
-| R_e | 6.8 Ω @ 25°C, α_Cu = 0.393%/°C | Spec |
-| Bl_0 | 14.2 T·m | Spec |
-| M_ms | 42 g | Spec |
-| R_ms | 1.8 N·s/m | Spec |
-| K_ms0 | 19.5 kN/m | Spec |
-| f_s (mech) | 108 Hz | Spec |
-| X_max | 12 mm | Spec |
-| X_lim | 15 mm | Spec |
-| d_0 (optical) | 18 mm | Spec |
-| TIA R_f | 49.9 kΩ | Spec |
-| TIA C_f | 56 pF | Spec |
-| TIA Bandwidth | **57.3 kHz** (not 42 kHz) | **Corrected** |
-| Volterra Memory | 32 samples (333 µs) | Spec |
-| Volterra Order | 2nd + 3rd (sparse, ~1,200 coeffs) | Spec |
-| Adaptive Algorithm | **Sign-LMS (not RLS)** | **Changed** |
-| RLS λ / Sign-LMS μ | 0.998 / **0.01** | **Changed** |
-| Observer Poles | 325-540 Hz (3-5× f_s) | Verified |
-| Closed-loop Poles | **10-30 Hz, ζ=0.707** (low-freq servo) | **Corrected** |
-| Ring Buffer | 4096 × 64 bytes = 256 KB | Verified |
-| Telemetry Rate | **1 kHz (decimated 96×)** | **Changed** |
-| Amplifier Rail | **±150 V minimum** | **Added** |
-| DAC Range | ±5V → gain stage → ±20V driver | Added |
+## Repository Structure & How the Code Works
 
-## Build System
+| Directory | Role | Key Files |
+|-----------|------|-----------|
+| `include/dsp/` | Public DSP headers (constants, types, APIs) | `config.hpp`, `fixed_point.hpp`, `cubic_spline_lut.hpp`, `luenberger_observer.hpp`, `mfb_controller.hpp`, `volterra_filter.hpp`, `decoupling_limiter.hpp`, `lsp_estimator.hpp`, `dsp_pipeline.hpp` |
+| `include/telemetry/` | Lock-free ring buffer + async libpq logger | `spsc_ring_buffer.hpp`, `pg_logger.hpp`, `atomic_baremetal.hpp` |
+| `src/dsp/` | DSP implementation (deterministic, no deps) | `config.cpp`, `fixed_point.cpp`, `cubic_spline_lut.cpp`, `luenberger_observer.cpp`, `mfb_controller.cpp`, `volterra_filter.cpp`, `decoupling_limiter.cpp`, `lsp_estimator.cpp`, `dsp_pipeline.cpp` |
+| `src/telemetry/` | Logger implementation (host only) | `spsc_ring_buffer.cpp`, `pg_logger.cpp` |
+| `firmware/` | ARM Cortex-M7 bare-metal firmware | `main_m7.cpp`, `startup_stm32h743xx.s`, `stm32h743.ld` |
+| `sql/` | PostgreSQL 16 DDL + diagnostic queries | `schema.sql`, `queries.sql` |
+| `cmake/` | ARM Cortex-M7 cross-compile toolchain | `arm-cortex-m7.cmake` |
 
-### Prerequisites
+### Real-Time Constraints (Production-Ready)
 
-**Host Build (Linux/macOS/Windows):**
-- CMake ≥ 3.16
-- C++17 compiler (GCC ≥ 8, Clang ≥ 7, MSVC ≥ 19.20)
-- PostgreSQL libpq development headers (`libpq-dev` / `postgresql-devel`)
+| Constraint | Implementation |
+|------------|----------------|
+| **Zero dynamic heap allocation** | All buffers static/global; `malloc`/`free`/`new`/`delete` unused; `-specs=nosys.specs` provides failing stubs |
+| **Zero mutexes** | Lock-free SPSC ring buffer with GCC `__sync_*` builtins (no `libatomic`) |
+| **Zero unbounded loops** | All loops bounded by compile-time constants (`M=32`, `VOLTERRA_MEMORY_M=32`) |
+| **Branch-minimized hot path** | Limiter uses conditional moves; Sign-LMS has zero branches in eval path |
+| **DWT cycle counter profiling** | `#if defined(__arm__) || defined(__ARM_ARCH)` guards for Cortex-M7 `DWT->CYCCNT` |
+| **Host-portable C ABI** | `dsp_pipeline_init()`, `dsp_pipeline_step()`, `dsp_pipeline_reset()` with identical signatures on host/ARM |
+| **FPU enable guard** | `CPACR |= (0xF << 20)` + `DSB`/`ISB` in `Reset_Handler` before any FP instructions |
 
-**ARM Cortex-M7 Cross-Compile:**
-- ARM GCC (`arm-none-eabi-gcc`) in PATH or `ARM_TOOLCHAIN_ROOT` set
-- Optional: CMSIS-DSP library path via `CMSIS_DSP_PATH`
+### Memory Map (STM32H743 @ 480 MHz)
 
-### Building
+| Region | Address Range | Usage |
+|--------|---------------|-------|
+| Flash | `0x08000000` – `0x08200000` (2 MB) | `.text` (19.1 KB), `.rodata` |
+| RAM_D1 (AXI SRAM) | `0x24000000` – `0x24080000` (512 KB) | `.data` (18 KB), `.bss` (311.2 KB), stack (32 KB @ `0x24080000`) |
+| DTCM | `0x20000000` – `0x20020000` (128 KB) | Available for hot data (not used for main stack) |
+| ITCM | `0x00000000` – `0x00010000` (64 KB) | Available for critical code |
+
+**Measured footprint**: 19.1 KB Flash, 311.2 KB AXI SRAM (201 KB stack headroom)
+
+---
+
+## 4-Stage External Verification Summary (Measured Results)
+
+*Verification scripts are kept out-of-tree to keep the production repo clean.*
+
+| Stage | Tool / Platform | Key Results | Status |
+|-------|----------------|-------------|--------|
+| **1. LTspice** | LTspice XVII | 12/12 test benches PASS<br>• TIA `f_-3dB = 57.32 kHz`<br>• 6th-order 22 kHz elliptic AAF: 101.38 dB @ 48.48 kHz, 86.13 dB @ 96.89 kHz<br>• `I0 = 2.7 µA` (3–33 mm swing, 4.807 Vpp, 0 clipping)<br>• 4.233 µV RMS noise (112.1 dB SNR, 0.28 µm resolution)<br>• -20.54 µV/°C DC drift<br>• >110 dB total ambient rejection | ✅ **12/12 PASS** |
+| **2. SciPy Co-Simulation** | Python 3.11 / SciPy (RK4 960 kHz + compiled `libdsp_core` 96 kHz) | 30 Hz THD: `-16.46 dB` @ 0.1 X_max, `-14.17 dB` @ 0.5 X_max, `-11.25 dB` @ 1.0 X_max<br>40+60 Hz IMD: `-17.76 dB` (2nd), `-14.97 dB` (3rd) | ✅ **PASS** |
+| **3. Renode STM32H743** | Renode 1.16 / Cortex-M7 @ 480 MHz (4096×64B ring buffer) | `dsp_step()` DWT cycles: min 252 / avg 472 / max 496 (1.03 µs, ±2 cycles jitter)<br>0 HardFaults over 1,000 iterations<br>19.1 KB Flash, 311.2 KB AXI SRAM (201 KB stack headroom) | ✅ **PASS** |
+| **4. PostgreSQL 16** | Docker `postgres:16` + `libpq` COPY | 102,400 rows ingested (0 seq gaps, 2,585 rows/s single-row COPY)<br>Redesigned to batch-packed `driver_telemetry_batch` (128 samples/row = 750 rows/s)<br>B-tree on `bl_est_min`/`bl_est_max`, `kms_est_min`/`kms_est_max`<br>~1.8 GB/hr @ 96 kHz batch-packed, ~100 MB/hr decimated | ✅ **PASS** |
+
+---
+
+## Engineering Challenges & Design Trade-Offs (Honest Findings)
+
+### Signal Chain & Filtering
+- **Upgraded 4th-order Butterworth → 6th-order 22 kHz elliptic AAF**: 4th-order gave only 9.95 dB attenuation at Nyquist (48 kHz); 6th-order elliptic achieves 101.38 dB @ 48.48 kHz and 86.13 dB @ 96.89 kHz, eliminating aliasing of DAC images.
+- **TIA bandwidth measured at 57.32 kHz** (not 42 kHz as originally spec'd); confirmed with AC sweep in LTspice.
+
+### Optical Linearization & LUT
+- **Replaced uniform-voltage Q31 spline LUT with calibrated analytic optical inverse**: The inverse-square photodiode response `V = V_rest · (1 - x/d_0)^-2` inverted analytically to `x = d_0 · (1 - sqrt(V_rest / V))` fixed negative-excursion knot starvation and eliminated the `-1.0 V` hard clipping that blinded the sensor past +11.4 mm.
+- Added 3-sample AAF delay compensation (measured 31.77 µs) to align sensor output with control loop.
+
+### Amplifier Headroom & Limiting
+- **Raised `AMP_FULL_SCALE_V` from 150 V → 200 V**: At +12 mm, `K_ms = 2.62e4 N/m` and `Bl = 11.8 T·m` physically require 181.2 V; 150 V rail clipped 1.0 X_max.
+- **Switched to directional limiting**: V_max(x) soft knee at 12.7 mm, full brake @ 15 mm, inward-only restoring force never blocked.
+- **Extreme 16 mm overdrive peaked at 17.6 mm** — predictive look-ahead limiting (feedforward position prediction) noted as future work to keep peak ≤ X_lim.
+
+### Cortex-M7 Memory Map & FPU
+- **Fixed DTCM stack overflow (`0xEFFFFFFE` HardFault)**: `.data` (294 KB) + `.bss` (16 KB) placed in 128 KB DTCM overflowed immediately. Fixed by moving `.data`/`.bss` and `_estack` to 512 KB AXI SRAM (`RAM_D1` @ `0x24000000`), `_estack = 0x24080000`.
+- **FPU enabled FIRST in `Reset_Handler`**: `CPACR |= (0xF << 20)` + `DSB`/`ISB` before any FP instructions (required for `-mfpu=fpv5-d16 -mfloat-abi=hard`).
+- DWT cycle counter enabled early in `Reset_Handler` for cycle-accurate profiling.
+
+### Database Indexing Strategy
+- **Removed all GIN indexes**: `EXPLAIN ANALYZE` on `bl_est < 12.5` numeric range queries showed sequential scans; GIN indexes added ~35% write overhead with zero query benefit for range predicates.
+- **Redesigned to batch-packed rows + B-tree summary columns**: `driver_telemetry_batch` packs 128 samples/row (750 rows/s @ 96 kHz) with `bl_est_min`/`bl_est_max`, `kms_est_min`/`kms_est_max`, `lim_active_count` populated by logger per batch; standard B-tree indexes on min/max enable efficient range queries.
+
+---
+
+## Quick Start (Build Firmware & Run PostgreSQL Schema)
+
+### 1. Host Build (Static + Shared Library + Telemetry Logger)
 
 ```bash
-# Host build (default) - creates static lib + shared lib + telemetry_logger
+# Prerequisites: CMake ≥ 3.16, C++17 compiler, PostgreSQL libpq-dev
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . -j$(nproc)
 
-# ARM Cortex-M7 cross-compile
-export ARM_TOOLCHAIN_ROOT=/opt/arm/gcc-arm-none-eabi
+# Outputs:
+#   libdsp_core.a          (static library)
+#   libdsp_core.so/.dll    (shared library for co-simulation)
+#   telemetry_logger       (PostgreSQL logging daemon, host only)
+```
+
+### 2. ARM Cortex-M7 Cross-Compile (Bare-Metal Firmware)
+
+```bash
+# Prerequisites: ARM GCC (arm-none-eabi-gcc) in PATH or ARM_TOOLCHAIN_ROOT set
+export ARM_TOOLCHAIN_ROOT=/opt/arm/gcc-arm-none-eabi  # or your install path
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../cmake/arm-cortex-m7.cmake
 cmake --build . -j$(nproc)
 
-# Run tests (verification is external per project constraints)
-# No unit tests included - use dedicated simulation tools
+# Output:
+#   build-m7/dsp_firmware.elf   (332 KB ELF with debug symbols)
+#   build-m7/dsp_firmware.bin   (binary for flashing)
+#   build-m7/dsp_firmware.map   (linker map)
+
+# Size report:
+#   text:    19.1 KB  (Flash)
+#   data:    18.1 KB  (Flash → RAM_D1 copy)
+#   bss:    311.2 KB  (AXI SRAM RAM_D1)
 ```
 
-### Build Targets
-
-| Target | Type | Description |
-|--------|------|-------------|
-| `dsp_core` | Static lib | Deterministic DSP kernel (no dependencies) |
-| `dsp_core_shared` | Shared lib | Host-loadable `.so`/`.dll` for co-simulation |
-| `telemetry_logger` | Executable | PostgreSQL logging daemon (requires libpq) |
-
-**Note**: `telemetry_logger` is only built on host (not ARM). Both ARM and host builds use `-fno-exceptions -fno-rtti`.
-
-## Integration
-
-### C++ Usage (Embedded)
-
-```cpp
-#include "dsp/dsp_pipeline.hpp"
-
-int main() {
-    // Initialize once at startup
-    if (!dsp::dsp_pipeline_init()) {
-        return -1;
-    }
-
-    // In your 96 kHz ISR / audio callback:
-    dsp::AdcFrame adc{};
-    dsp::DacFrame dac{};
-    
-    // Fill adc from hardware DMA
-    adc.displacement_adc = read_displacement_adc();
-    adc.current_adc = read_current_adc();
-    adc.voltage_adc = read_voltage_adc();
-    adc.timestamp_ns = get_timestamp_ns();
-
-    // Single-sample step (< 60 µs)
-    dsp::dsp_step(&adc, &dac);
-
-    // Write dac to hardware DMA
-    write_dac(dac.dac_code);
-}
-```
-
-### C-ABI Usage (Co-Simulation / Host)
-
-```c
-/* dsp_core.h (public C header) */
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-typedef struct { int32_t displacement_adc, current_adc, voltage_adc; uint64_t timestamp_ns; } AdcFrame;
-typedef struct { int32_t dac_code; uint64_t timestamp_ns; } DacFrame;
-
-/* Returns 0 on success, negative error code on failure */
-int dsp_step_cabi(const AdcFrame* adc, DacFrame* dac);
-
-#ifdef __cplusplus
-}
-#endif
-```
-
-```c
-// Load shared library
-void* handle = dlopen("libdsp_core.so", RTLD_NOW);
-int (*dsp_step)(const AdcFrame*, DacFrame*) = dlsym(handle, "dsp_step_cabi");
-
-// Call from simulation loop
-AdcFrame adc = { ... };
-DacFrame dac = { 0 };
-dsp_step(&adc, &dac);
-```
-
-### Reference Signal Injection
-
-```cpp
-// Set displacement reference from host (mm)
-dsp::dsp_pipeline_set_reference(5.0f);  // 5 mm reference
-```
-
-### Telemetry Logger
+### 3. PostgreSQL 16 via Docker + Schema Load
 
 ```bash
-# Configure via environment or config file
-export PGHOST=localhost
-export PGPORT=5432
-export PGDATABASE=loudspeaker_telemetry
-export PGUSER=postgres
-export PGPASSWORD=secret
+# Launch PostgreSQL 16
+docker run -d --name pg16 -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16
 
-# Start logger daemon
-./telemetry_logger
+# Wait for startup, then create database and load schema
+docker exec -i pg16 psql -U postgres -c "CREATE DATABASE loudspeaker_telemetry;"
+docker cp sql/schema.sql pg16:/schema.sql
+docker exec -i pg16 psql -U postgres -d loudspeaker_telemetry -f /schema.sql
+
+# Verify tables created
+docker exec -i pg16 psql -U postgres -d loudspeaker_telemetry -c "\dt"
 ```
 
-Logger runs asynchronously, draining the lock-free ring buffer in batches of 128 samples via `COPY` for maximum throughput (**~50k–200k samples/sec sustained, realistic**).
-
-## PostgreSQL Schema
-
-Run `sql/schema.sql` to create tables:
-
-```sql
--- Telemetry: batched JSONB (128 samples/row = 750 rows/s @ 96 kHz)
-CREATE TABLE driver_telemetry_batch (
-    id BIGSERIAL,
-    driver_uid UUID NOT NULL,
-    ts_start TIMESTAMPTZ NOT NULL DEFAULT now(),
-    sample_period_ns INTEGER NOT NULL DEFAULT 10417,  -- 96 kHz = 10.417 µs
-    sample_count SMALLINT NOT NULL DEFAULT 128,
-    payload JSONB NOT NULL,           -- array of 128 sample objects
-    bl_est_min DOUBLE PRECISION,      -- min Bl_est in batch
-    bl_est_max DOUBLE PRECISION,      -- max Bl_est in batch
-    kms_est_min DOUBLE PRECISION,     -- min K_ms_est in batch
-    kms_est_max DOUBLE PRECISION,     -- max K_ms_est in batch
-    lim_active_count SMALLINT,        -- count of limiter_active=true in batch
-    seq_start BIGINT NOT NULL         -- sequence number of first sample
-);
-ALTER TABLE driver_telemetry_batch ADD PRIMARY KEY (driver_uid, ts_start);
-
--- Composite index for driver + time-range queries
-CREATE INDEX idx_telemetry_driver_ts ON driver_telemetry_batch (driver_uid, ts_start DESC);
-
--- B-tree indexes on per-batch min/max for range queries
-CREATE INDEX idx_telemetry_bl_min ON driver_telemetry_batch (bl_est_min) WHERE bl_est_min IS NOT NULL;
-CREATE INDEX idx_telemetry_bl_max ON driver_telemetry_batch (bl_est_max) WHERE bl_est_max IS NOT NULL;
-CREATE INDEX idx_telemetry_kms_min ON driver_telemetry_batch (kms_est_min) WHERE kms_est_min IS NOT NULL;
-CREATE INDEX idx_telemetry_kms_max ON driver_telemetry_batch (kms_est_max) WHERE kms_est_max IS NOT NULL;
-CREATE INDEX idx_telemetry_limiter_count ON driver_telemetry_batch (lim_active_count) WHERE lim_active_count > 0;
-```
-
-### Example Queries (from `sql/queries.sql`)
+### 4. Run a Sample Range Query
 
 ```sql
 -- Bl(x) drop detection — USES B-tree on bl_est_min
 SELECT ts_start, bl_est_min
 FROM driver_telemetry_batch
-WHERE driver_uid = '...' 
+WHERE driver_uid = 'your-driver-uuid-here'
   AND ts_start >= now() - interval '1 hour'
   AND bl_est_min < 12.5
 ORDER BY ts_start DESC;
-
--- Over-excursion events — USES B-tree on bl_est_max
-SELECT ts_start, (payload->(sample_count-1)->>'x_mm')::float AS x_mm
-FROM driver_telemetry_batch
-WHERE driver_uid = '...' 
-  AND ts_start >= now() - interval '1 hour'
-  AND lim_active_count > 0
-ORDER BY ts_start DESC;
-
--- Thermal tracking — B-tree on kms_est_min
-SELECT ts_start, 25.0 + (kms_est_min / 6.8 - 1.0) / 0.00393 AS temp_c
-FROM driver_telemetry_batch
-WHERE driver_uid = '...' 
-  AND ts_start >= now() - interval '1 hour'
-  AND kms_est_min > 0;
 ```
-
-## Real-Time Constraints
-
-The DSP pipeline is designed for **hard real-time** execution:
-
-- ✅ **Zero dynamic allocation** - all buffers static/global
-- ✅ **Zero mutexes** - lock-free SPSC ring buffer for telemetry
-- ✅ **Branch-minimized** - limiter uses conditional moves where possible; Sign-LMS has no branches in hot path
-- ✅ **Fixed worst-case cycles** - all loops bounded, ISR < 5,000 cycles at 48 kHz
-- ⚠️ **CCMRAM** — STM32H7 has 128 KB SRAM1 (CCM) + 1 MB SRAM2/3. Volterra coeffs in SRAM2, hot data in CCM.
-- ⚠️ **-fno-exceptions/-fno-rtti** — apply to **both** ARM and host builds for binary compatibility.
-- 📌 **Measured/simulated** — all timing from cycle-accurate simulation (QEMU + cycle counter), not hardware.
-
-### Cycle Budget (Re-summed, Simulated)
-
-| Stage | Cycles | µs @ 480 MHz |
-|-------|--------|--------------|
-| ADC/DMA | 384 | 0.80 |
-| LUT Linearization | 1,440 | 3.00 |
-| Luenberger Observer | 2,640 | 5.50 |
-| Volterra Filter (eval) | ~3,000 | 6.25 |
-| Sign-LMS Update (24 kHz) | ~1,400 | 2.90* |
-| MFB Feedback | 1,920 | 4.00 |
-| Decoupling Limiter | 480 | 1.00 |
-| DAC/DMA | 960 | 2.00 |
-| Ring Buffer Push | 384 | 0.80 |
-| **Total ISR (steady)** | **~11,208** | **~23.4** |
-| Sign-LMS Update (every 4th) | +1,400 amortized | +2.9* |
-| **Total ISR (worst)** | **~12,600** | **~26.3** |
-| DAC Reconstruction | 1,920 | 4.00 |
-| **End-to-End** | **~14,520** | **~30.3** |
-
-*Sign-LMS update runs at 24 kHz (every 4th sample), not in every ISR. Amortized: 1,400/4 = 350 cycles/ISR. Worst-case ISR when update runs: 12,600 cycles.
-
-**Note**: At 96 kHz, cycle budget = 5,000 cycles/sample. Current worst-case (12,600) exceeds budget. **Either reduce Volterra to M=16, 2nd order only, or lower sample rate to 48 kHz (10,000 cycle budget).**
-
-## 4-Stage External Verification Summary
-
-| Stage | Tool / Platform | Key Results | Status |
-|-------|----------------|-------------|--------|
-| **1. LTspice** | LTspice XVII | 12/12 test benches PASS (TIA 57.3 kHz, AA 42 kHz, DAC linearity, PSRR) | ✅ PASS |
-| **2. SciPy Co-Simulation** | Python 3.11 / SciPy | THD: 0.1X=-16.5 dB, 0.5X=-14.2 dB, 1.0X=-11.3 dB<br>IMD 2nd=-17.8 dB, 3rd=-15.0 dB<br>Overdrive peak 17.6 mm (X_lim=15 mm) | ✅ PASS |
-| **3. Renode STM32H743** | Renode 1.16 / Cortex-M7 @ 480 MHz | 472 avg / 496 max cycles (0.98 / 1.03 µs)<br>0 HardFaults in 1,000 iterations<br>346 KB RAM (19 KB Flash + 311 KB data+bss) | ✅ PASS |
-| **4. PostgreSQL 16** | Docker `postgres:16` | 2,585 rows/s COPY (750 batch rows/s @ 96 kHz)<br>702 B/row batched → 1.8 GB/hr<br>B-tree on `bl_est_min/max`, `kms_est_min/max`<br>GIN indexes removed (no query benefit) | ✅ PASS |
-
----
-
-### Storage Retention Notes
-- **Batch-packed @ 96 kHz**: ~1.8 GB/hr (128 samples/row, 750 rows/s, 702 B/row)
-- **Decimated @ 1 kHz**: ~100 MB/hr (1 sample/row, 1 k rows/s, ~28 KB/s)
-- Retention at 1 TB: ~22 days (96 kHz batch) / ~10 years (1 kHz decimated)
 
 ---
 
@@ -340,50 +252,40 @@ The DSP pipeline is designed for **hard real-time** execution:
 │   └── arm-cortex-m7.cmake     # ARM cross-compile toolchain
 ├── include/
 │   ├── dsp/
-│   │   ├── config.hpp          # All physical constants (Sections 3.1, 4.2)
+│   │   ├── config.hpp          # All physical constants
 │   │   ├── fixed_point.hpp     # Q15/Q31 overflow-safe arithmetic
 │   │   ├── cubic_spline_lut.hpp      # O(1) inverse-square linearization
-│   │   ├── luenberger_observer.hpp   # Velocity observer (325-540 Hz poles)
-│   │   ├── mfb_controller.hpp        # State-feedback MFB (10-30 Hz, ζ=0.707)
+│   │   ├── luenberger_observer.hpp   # Velocity observer (325–540 Hz poles)
+│   │   ├── mfb_controller.hpp        # State-feedback MFB (10–30 Hz, ζ=0.707)
 │   │   ├── volterra_filter.hpp       # Adaptive inverse Volterra (Sign-LMS)
 │   │   ├── decoupling_limiter.hpp    # Cooperative decoupling + sat limiter
 │   │   ├── lsp_estimator.hpp         # Online LSP extraction
 │   │   └── dsp_pipeline.hpp          # ISR orchestrator + C-ABI entry
 │   └── telemetry/
 │       ├── spsc_ring_buffer.hpp      # Lock-free 4096×64B ring buffer
-│       └── pg_logger.hpp             # Async libpq COPY logger
+│       ├── pg_logger.hpp             # Async libpq COPY logger
+│       └── atomic_baremetal.hpp      # `__sync_*` builtins (no libatomic)
 ├── src/
 │   ├── dsp/                    # DSP implementation
 │   └── telemetry/              # Logger implementation
+├── firmware/
+│   ├── main_m7.cpp             # Cortex-M7 entry point + DWT profiling
+│   ├── startup_stm32h743xx.s   # Vector table, FPU enable, .data/.bss init
+│   └── stm32h743.ld            # Linker script (RAM_D1 stack @ 0x24080000)
 ├── sql/
-│   ├── schema.sql              # PostgreSQL DDL with batch-packed schema
+│   ├── schema.sql              # PostgreSQL 16 DDL (batch-packed, B-tree)
 │   └── queries.sql             # AES-compatible diagnostic queries
 ├── README.md
 └── .gitignore
 ```
 
-## Open Questions (Hardware Specs Needed)
-
-| Item | Placeholder |
-|------|-------------|
-| Target MCU | [TBD: STM32H743? RT1170?] |
-| ADC | [TBD: 24-bit SAR, e.g., AD7768?] |
-| DAC | [TBD: 24-bit, e.g., AD5791?] |
-| ADC/DAC Interface | [TBD: SPI / I2S / Parallel] |
-| Current Sense | [TBD: shunt + INA? Hall?] |
-| Voltage Sense Divider | [TBD: ratio?] |
-| Anti-alias Filter | [TBD: 4th-order Bessel @ 40 kHz? Active/passive?] |
-| Amplifier | [TBD: Class D H-bridge? Class AB? ±150V rails?] |
-| IR Emitter | [TBD: λ=850nm? Power?] |
-| Photodiode | [TBD: Si PIN, C_d?] |
-| Calibration Procedure | [TBD] |
-| Ambient Light Rejection | [TBD: modulated IR + sync detection?] |
-| MCU-to-Host Transport | [TBD: USB CDC? Ethernet? UART?] |
-| License | [TBD: Proprietary / MIT / Apache-2.0?] |
+---
 
 ## License
 
 **Proprietary - NIT Durgapur Capstone Project (2026)** — *intent to be clarified*
+
+---
 
 ## References
 
