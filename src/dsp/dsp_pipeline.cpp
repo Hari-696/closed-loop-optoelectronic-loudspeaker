@@ -14,7 +14,9 @@
 #include "dsp/volterra_filter.hpp"
 #include "dsp/decoupling_limiter.hpp"
 #include "dsp/lsp_estimator.hpp"
+#ifndef ARM_MATH_CM7
 #include "telemetry/spsc_ring_buffer.hpp"  // For telemetry push
+#endif
 #include <cstdint>
 
 namespace dsp {
@@ -64,7 +66,9 @@ bool dsp_pipeline_init() noexcept {
     ok &= volterra_filter_init(1.0f / X_MAX, 1.0f);
     ok &= decoupling_limiter_init();
     ok &= lsp_estimator_init();
+#ifndef ARM_MATH_CM7
     ok &= telemetry::spsc_ring_buffer_init();
+#endif
     
     // Reset pipeline state
     dsp_pipeline_reset();
@@ -88,7 +92,9 @@ void dsp_pipeline_reset() noexcept {
     g_volterra_filter.order3.g3.fill(0);
     decoupling_limiter_reset();
     lsp_estimator_reset();
+#ifndef ARM_MATH_CM7
     telemetry::spsc_ring_buffer_reset();
+#endif
 }
 
 // ============================================================================
@@ -122,9 +128,10 @@ DSP_INLINE int32_t q31_voltage_to_dac(fixed::q31_t v_q31) noexcept {
 }
 
 // ============================================================================
-// Telemetry Sample Construction
+// Telemetry Sample Construction (disabled on bare-metal)
 // ============================================================================
 
+#ifndef ARM_MATH_CM7
 DSP_INLINE void push_telemetry_sample() noexcept {
     using namespace fixed;
     auto& F = g_dsp_frame;
@@ -155,6 +162,11 @@ DSP_INLINE void push_telemetry_sample() noexcept {
     
     telemetry::spsc_ring_buffer_push(sample);
 }
+#else
+DSP_INLINE void push_telemetry_sample() noexcept {
+    // No-op on bare-metal
+}
+#endif
 
 // ============================================================================
 // Main ISR Step Function

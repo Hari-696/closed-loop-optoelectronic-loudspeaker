@@ -73,56 +73,35 @@ if(NOT LIBPQ_FOUND)
     endif()
 endif()
 
-# --- dsp_core library ---
-add_library(dsp_core STATIC
-    src/dsp/config.cpp
-    src/dsp/fixed_point.cpp
-    src/dsp/cubic_spline_lut.cpp
-    src/dsp/luenberger_observer.cpp
-    src/dsp/mfb_controller.cpp
-    src/dsp/volterra_filter.cpp
-    src/dsp/decoupling_limiter.cpp
-    src/dsp/lsp_estimator.cpp
-    src/dsp/dsp_pipeline.cpp
-    src/telemetry/spsc_ring_buffer.cpp
-)
-
-target_include_directories(dsp_core PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
-
-target_compile_definitions(dsp_core PRIVATE
-    DSP_CORE_EXPORTS
-    DSP_FIXED_POINT=1
-)
-
-# ARM Cortex-M7 specific flags
-if(DEFINED ENV{ARM_TOOLCHAIN})
-    target_compile_options(dsp_core PRIVATE
-        -mcpu=cortex-m7
-        -mfpu=fpv5-d16
-        -mfloat-abi=hard
-        -mthumb
-        -ffunction-sections
-        -fdata-sections
-        -fno-exceptions
-        -fno-rtti
-        -fno-threadsafe-statics
-        -fno-use-cxa-atexit
-    )
-    target_link_options(dsp_core PRIVATE
-        -Wl,--gc-sections
-        -specs=nano.specs
-        -specs=nosys.specs
-    )
-else()
-    # Host build - export C ABI for shared library loading
-    target_compile_options(dsp_core PRIVATE -fvisibility=hidden)
-endif()
-
-# --- dsp_core shared library (host) ---
+# Host build: static and shared libraries
 if(NOT DEFINED ENV{ARM_TOOLCHAIN})
+    # --- dsp_core static library ---
+    add_library(dsp_core STATIC
+        src/dsp/config.cpp
+        src/dsp/fixed_point.cpp
+        src/dsp/cubic_spline_lut.cpp
+        src/dsp/luenberger_observer.cpp
+        src/dsp/mfb_controller.cpp
+        src/dsp/volterra_filter.cpp
+        src/dsp/decoupling_limiter.cpp
+        src/dsp/lsp_estimator.cpp
+        src/dsp/dsp_pipeline.cpp
+        src/telemetry/spsc_ring_buffer.cpp
+    )
+    
+    target_include_directories(dsp_core PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    )
+    
+    target_compile_definitions(dsp_core PRIVATE
+        DSP_CORE_EXPORTS
+        DSP_FIXED_POINT=1
+    )
+    
+    target_compile_options(dsp_core PRIVATE -fvisibility=hidden)
+    
+    # --- dsp_core shared library (host) ---
     add_library(dsp_core_shared SHARED
         src/dsp/config.cpp
         src/dsp/fixed_point.cpp
@@ -135,14 +114,17 @@ if(NOT DEFINED ENV{ARM_TOOLCHAIN})
         src/dsp/dsp_pipeline.cpp
         src/telemetry/spsc_ring_buffer.cpp
     )
+    
     target_include_directories(dsp_core_shared PUBLIC
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
     )
+    
     target_compile_definitions(dsp_core_shared PRIVATE
         DSP_CORE_EXPORTS
         DSP_FIXED_POINT=1
     )
+    
     target_compile_options(dsp_core_shared PRIVATE -fvisibility=hidden)
     target_link_options(dsp_core_shared PRIVATE -Wl,--export-all-symbols)
     set_target_properties(dsp_core_shared PROPERTIES
@@ -150,46 +132,97 @@ if(NOT DEFINED ENV{ARM_TOOLCHAIN})
         SOVERSION 1
         VERSION 1.0.0
     )
-endif()
-
-# --- telemetry_logger executable ---
-if(LIBPQ_FOUND)
-    add_executable(telemetry_logger
-        src/telemetry/pg_logger.cpp
+else()
+    # ARM Cortex-M7 bare-metal build
+    # --- dsp_firmware (ARM Cortex-M7 bare-metal) ---
+    add_executable(dsp_firmware
+        startup_stm32h743xx.s
+        src/main_m7.cpp
+        src/dsp/config.cpp
+        src/dsp/fixed_point.cpp
+        src/dsp/cubic_spline_lut.cpp
+        src/dsp/luenberger_observer.cpp
+        src/dsp/mfb_controller.cpp
+        src/dsp/volterra_filter.cpp
+        src/dsp/decoupling_limiter.cpp
+        src/dsp/lsp_estimator.cpp
+        src/dsp/dsp_pipeline.cpp
         src/telemetry/spsc_ring_buffer.cpp
     )
-    target_include_directories(telemetry_logger PRIVATE
+    
+    target_include_directories(dsp_firmware PRIVATE
         ${CMAKE_SOURCE_DIR}/include
-        ${LIBPQ_INCLUDE_DIRS}
     )
-    target_link_libraries(telemetry_logger
-        dsp_core
-        ${LIBPQ_LIBRARIES}
-        pthread
+    
+    target_compile_definitions(dsp_firmware PRIVATE
+        DSP_CORE_EXPORTS
+        DSP_FIXED_POINT=1
+        ARM_MATH_CM7
+        __FPU_PRESENT=1
+        __FPU_USED=1
     )
-    target_compile_definitions(telemetry_logger PRIVATE
-        TELEMETRY_LOGGER_EXPORTS
+    
+    target_link_options(dsp_firmware PRIVATE
+        -Wl,--gc-sections
+        -T${CMAKE_SOURCE_DIR}/stm32h743.ld
+        -Wl,-Map=${CMAKE_PROJECT_NAME}.map
     )
-else()
-    message(WARNING "libpq not found - telemetry_logger will not be built")
+    
+    set_target_properties(dsp_firmware PROPERTIES
+        OUTPUT_NAME "dsp_firmware"
+        SUFFIX ".elf"
+    )
+    
+    # Generate binary, listing, and size report
+    add_custom_target(firmware_bin ALL
+        COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:dsp_firmware> ${CMAKE_PROJECT_NAME}.bin
+        COMMAND ${CMAKE_OBJDUMP} -S $<TARGET_FILE:dsp_firmware> > ${CMAKE_PROJECT_NAME}.lst
+        COMMAND ${CMAKE_SIZE} $<TARGET_FILE:dsp_firmware>
+        DEPENDS dsp_firmware
+        COMMENT "Generating binary, listing, and size report"
+    )
+endif()
+
+# --- telemetry_logger executable (host only) ---
+if(NOT DEFINED ENV{ARM_TOOLCHAIN})
+    if(LIBPQ_FOUND)
+        add_executable(telemetry_logger
+            src/telemetry/pg_logger.cpp
+            src/telemetry/spsc_ring_buffer.cpp
+        )
+        target_include_directories(telemetry_logger PRIVATE
+            ${CMAKE_SOURCE_DIR}/include
+            ${LIBPQ_INCLUDE_DIRS}
+        )
+        target_link_libraries(telemetry_logger
+            dsp_core
+            ${LIBPQ_LIBRARIES}
+            pthread
+        )
+        target_compile_definitions(telemetry_logger PRIVATE
+            TELEMETRY_LOGGER_EXPORTS
+        )
+    else()
+        message(WARNING "libpq not found - telemetry_logger will not be built")
+    endif()
 endif()
 
 # --- Installation ---
-install(TARGETS dsp_core
-    ARCHIVE DESTINATION lib
-    LIBRARY DESTINATION lib
-    RUNTIME DESTINATION bin
-)
 if(NOT DEFINED ENV{ARM_TOOLCHAIN})
+    install(TARGETS dsp_core
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib
+        RUNTIME DESTINATION bin
+    )
     install(TARGETS dsp_core_shared
         LIBRARY DESTINATION lib
         RUNTIME DESTINATION bin
     )
-endif()
-if(LIBPQ_FOUND)
-    install(TARGETS telemetry_logger
-        RUNTIME DESTINATION bin
-    )
+    if(LIBPQ_FOUND)
+        install(TARGETS telemetry_logger
+            RUNTIME DESTINATION bin
+        )
+    endif()
 endif()
 install(DIRECTORY include/ DESTINATION include)
 install(FILES sql/schema.sql sql/queries.sql DESTINATION share/closed_loop_loudspeaker/sql)

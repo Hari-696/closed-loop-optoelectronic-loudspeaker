@@ -10,9 +10,18 @@
  */
 
 #include <cstdint>
-#include <atomic>
 #include <array>
 #include "dsp/config.hpp"
+
+#if defined(ARM_MATH_CM7) && defined(__arm__) || defined(__ARM_ARCH)
+    // Bare-metal build: use custom atomic implementation
+    #include "telemetry/atomic_baremetal.hpp"
+    namespace telemetry_atomic = dsp;
+#else
+    // Host build: use std::atomic
+    #include <atomic>
+    namespace telemetry_atomic = std;
+#endif
 
 namespace telemetry {
 
@@ -60,9 +69,9 @@ public:
      * @brief Initialize buffer (zero-initialize).
      */
     void init() noexcept {
-        head_.store(0, std::memory_order_relaxed);
-        tail_.store(0, std::memory_order_relaxed);
-        overwrites_.store(0, std::memory_order_relaxed);
+        head_.store(0);
+        tail_.store(0);
+        overwrites_.store(0);
     }
     
     /**
@@ -75,21 +84,21 @@ public:
      * @return true if pushed without overwrite, false if overrun occurred
      */
     bool push(const TelemetrySample& sample) noexcept {
-        size_t head = head_.load(std::memory_order_relaxed);
+        size_t head = head_.load();
         size_t next_head = (head + 1) % CAPACITY;
-        size_t tail = tail_.load(std::memory_order_acquire);  // Acquire: see consumer's progress
+        size_t tail = tail_.load();
         
         if (next_head == tail) {
             // Buffer full - overwrite oldest (tail advances)
-            overwrites_.fetch_add(1, std::memory_order_relaxed);
+            overwrites_.fetch_add(1);
             buffer_[head] = sample;
-            tail_.store((tail + 1) % CAPACITY, std::memory_order_release);
-            head_.store(next_head, std::memory_order_release);
+            tail_.store((tail + 1) % CAPACITY);
+            head_.store(next_head);
             return false;  // Overrun
         }
         
         buffer_[head] = sample;
-        head_.store(next_head, std::memory_order_release);  // Release: publish to consumer
+        head_.store(next_head);
         return true;
     }
     
@@ -103,8 +112,8 @@ public:
      * @return Number of samples copied
      */
     size_t pop_batch(TelemetrySample* out) noexcept {
-        size_t tail = tail_.load(std::memory_order_relaxed);
-        size_t head = head_.load(std::memory_order_acquire);  // Acquire: see producer's writes
+        size_t tail = tail_.load();
+        size_t head = head_.load();
         
         size_t available = (head >= tail) ? (head - tail) : (CAPACITY - tail + head);
         size_t to_copy = (available < BATCH_SIZE) ? available : BATCH_SIZE;
@@ -124,7 +133,7 @@ public:
             }
         }
         
-        tail_.store((tail + to_copy) % CAPACITY, std::memory_order_release);  // Release: consume
+        tail_.store((tail + to_copy) % CAPACITY);
         return to_copy;
     }
     
@@ -132,8 +141,8 @@ public:
      * @brief Get number of available samples (consumer view).
      */
     size_t available() const noexcept {
-        size_t head = head_.load(std::memory_order_acquire);
-        size_t tail = tail_.load(std::memory_order_acquire);
+        size_t head = head_.load();
+        size_t tail = tail_.load();
         return (head >= tail) ? (head - tail) : (CAPACITY - tail + head);
     }
     
@@ -148,15 +157,15 @@ public:
      * @brief Get overrun count.
      */
     uint64_t overwrites() const noexcept {
-        return overwrites_.load(std::memory_order_relaxed);
+        return overwrites_.load();
     }
     
     /**
      * @brief Check if buffer is empty.
      */
     bool empty() const noexcept {
-        size_t head = head_.load(std::memory_order_acquire);
-        size_t tail = tail_.load(std::memory_order_acquire);
+        size_t head = head_.load();
+        size_t tail = tail_.load();
         return head == tail;
     }
     
@@ -164,9 +173,9 @@ public:
      * @brief Check if buffer is full.
      */
     bool full() const noexcept {
-        size_t head = head_.load(std::memory_order_acquire);
+        size_t head = head_.load();
         size_t next_head = (head + 1) % CAPACITY;
-        size_t tail = tail_.load(std::memory_order_acquire);
+        size_t tail = tail_.load();
         return next_head == tail;
     }
     
@@ -174,16 +183,16 @@ public:
      * @brief Reset buffer (call only when both threads quiesced).
      */
     void reset() noexcept {
-        head_.store(0, std::memory_order_relaxed);
-        tail_.store(0, std::memory_order_relaxed);
-        overwrites_.store(0, std::memory_order_relaxed);
+        head_.store(0);
+        tail_.store(0);
+        overwrites_.store(0);
     }
 
 private:
     std::array<TelemetrySample, CAPACITY> buffer_;
-    alignas(64) std::atomic<size_t> head_{0};  // Producer index
-    alignas(64) std::atomic<size_t> tail_{0};  // Consumer index
-    alignas(64) std::atomic<uint64_t> overwrites_{0};
+    alignas(64) telemetry_atomic::atomic_size_t head_{0};  // Producer index
+    alignas(64) telemetry_atomic::atomic_size_t tail_{0};  // Consumer index
+    alignas(64) telemetry_atomic::atomic_uint64_t overwrites_{0};
 };
 
 // Global instance
